@@ -1,0 +1,60 @@
+# =====================================
+# Python ignores
+# =====================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment folders
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# =====================================
+# App-specific ignores
+# =====================================
+
+# SQLite database files (generated at runtime)
+*.db
+*.sqlite
+*.sqlite3
+
+# Local config / cache
+*.ini
+*.cfg
+*.cache
+*.tmp
+
+# Backup files
+*~
+
+# =====================================
+# VS Code ignores
+# =====================================
+
+.vscode/
+.code-workspace
+
+# =====================================
+# Windows / system files
+# =====================================
+
+Thumbs.db
+Desktop.ini
+
+# =====================================
+# Git specific
+# =====================================
+
+.DS_Store
