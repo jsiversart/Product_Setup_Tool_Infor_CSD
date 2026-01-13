@@ -1,379 +1,87 @@
+# app/main.py - Enhanced Main Application
 import FreeSimpleGUI as sg
 import pandas as pd
-import sqlite3
 import os
-import json
-import re
-import unicodedata
-import shutil
-from datetime import datetime
 from pathlib import Path
 
-# =============================================================================
-# DATABASE MANAGEMENT
-# =============================================================================
+# Import our modules
+from database import AppDatabase
+from settings import Settings
+from step1_processor import process_step1
+from step2_processor import process_step2
+from template_generator import TemplateGenerator
 
-class AppDatabase:
-    """Manage self-contained application database"""
+def validate_required_fields(values):
+    """Validate that required fields are filled"""
+    required = ['prod', 'vendor_no', 'description', 'repl_cost']
+    missing = []
     
-    def __init__(self, db_path='app_data.db'):
-        self.db_path = db_path
-        self.conn = None
-        self.initialize_database()
+    for field in required:
+        if not values.get(field) or str(values[field]).strip() == '':
+            missing.append(field.replace('_', ' ').title())
     
-    def initialize_database(self):
-        """Create database and tables if they don't exist"""
-        self.conn = sqlite3.connect(self.db_path)
-        cursor = self.conn.cursor()
-        
-        # Vendor defaults table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS vendor_defaults (
-                vendor_no INTEGER PRIMARY KEY,
-                default_brandcode TEXT,
-                default_prodcat TEXT,
-                default_webcat TEXT,
-                default_prodline TEXT,
-                seasonal_flag TEXT,
-                created_date TEXT,
-                modified_date TEXT
-            )
-        ''')
-        
-        # Warehouse info table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS warehouse_info (
-                warehouse INTEGER PRIMARY KEY,
-                type TEXT,
-                arpwhse INTEGER,
-                description TEXT,
-                active INTEGER DEFAULT 1
-            )
-        ''')
-        
-        # Pricing multipliers table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS pricing_multipliers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vendor TEXT,
-                vendor_list_handling TEXT,
-                base_0_01_1_49 REAL,
-                base_1_5_4_99 REAL,
-                base_5_49_99 REAL,
-                base_50_74_99 REAL,
-                base_75_99_99 REAL,
-                base_100_499_99 REAL,
-                base_500_999_99 REAL,
-                base_1000_999999 REAL,
-                list_0_01_4_99 REAL,
-                list_5_49_99 REAL,
-                list_50_74_99 REAL,
-                list_75_99999 REAL
-            )
-        ''')
-        
-        # Upload log table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS upload_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_name TEXT,
-                file_creation_ts TEXT,
-                update_count INTEGER,
-                notes TEXT
-            )
-        ''')
-        
-        # Product staging table (for batch processing)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS product_staging (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                product TEXT,
-                vendor_no INTEGER,
-                description TEXT,
-                core_flag TEXT,
-                repl_cost REAL,
-                base_price REAL,
-                list_price REAL,
-                length REAL,
-                width REAL,
-                height REAL,
-                weight REAL,
-                brand_code TEXT,
-                product_cat TEXT,
-                website_cat TEXT,
-                wp_wise TEXT,
-                tr_returnable TEXT,
-                created_date TEXT
-            )
-        ''')
-        
-        self.conn.commit()
-        
-        # Insert default warehouses if table is empty
-        cursor.execute('SELECT COUNT(*) FROM warehouse_info')
-        if cursor.fetchone()[0] == 0:
-            default_warehouses = [
-                (25, 'D', 15, 'Main Distribution Center'),
-                (50, 'D', 16, 'Secondary Distribution Center'),
-                (10, 'B', None, 'Branch 10'),
-                (20, 'B', None, 'Branch 20')
-            ]
-            cursor.executemany(
-                'INSERT INTO warehouse_info (warehouse, type, arpwhse, description) VALUES (?, ?, ?, ?)',
-                default_warehouses
-            )
-            self.conn.commit()
-    
-    def get_vendor_defaults(self, vendor_no):
-        """Get vendor defaults from database"""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM vendor_defaults WHERE vendor_no = ?', (vendor_no,))
-        row = cursor.fetchone()
-        if row:
-            return {
-                'default_brandcode': row[1],
-                'default_prodcat': row[2],
-                'default_webcat': row[3],
-                'default_prodline': row[4],
-                'seasonal_flag': row[5]
-            }
-        return None
-    
-    def save_vendor_defaults(self, vendor_no, defaults):
-        """Save or update vendor defaults"""
-        cursor = self.conn.cursor()
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        cursor.execute('SELECT vendor_no FROM vendor_defaults WHERE vendor_no = ?', (vendor_no,))
-        exists = cursor.fetchone()
-        
-        if exists:
-            cursor.execute('''
-                UPDATE vendor_defaults 
-                SET default_brandcode=?, default_prodcat=?, default_webcat=?, 
-                    default_prodline=?, seasonal_flag=?, modified_date=?
-                WHERE vendor_no=?
-            ''', (defaults['default_brandcode'], defaults['default_prodcat'], 
-                  defaults['default_webcat'], defaults['default_prodline'],
-                  defaults['seasonal_flag'], now, vendor_no))
-        else:
-            cursor.execute('''
-                INSERT INTO vendor_defaults 
-                (vendor_no, default_brandcode, default_prodcat, default_webcat, 
-                 default_prodline, seasonal_flag, created_date, modified_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (vendor_no, defaults['default_brandcode'], defaults['default_prodcat'],
-                  defaults['default_webcat'], defaults['default_prodline'],
-                  defaults['seasonal_flag'], now, now))
-        
-        self.conn.commit()
-    
-    def get_all_vendors(self):
-        """Get list of all vendors"""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT vendor_no, default_brandcode FROM vendor_defaults ORDER BY vendor_no')
-        return cursor.fetchall()
-    
-    def delete_vendor(self, vendor_no):
-        """Delete vendor defaults"""
-        cursor = self.conn.cursor()
-        cursor.execute('DELETE FROM vendor_defaults WHERE vendor_no = ?', (vendor_no,))
-        self.conn.commit()
-    
-    def get_warehouses(self):
-        """Get all active warehouses"""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM warehouse_info WHERE active = 1 ORDER BY warehouse')
-        return cursor.fetchall()
-    
-    def get_pricing_multipliers(self):
-        """Get pricing multipliers"""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM pricing_multipliers')
-        return pd.read_sql_query('SELECT * FROM pricing_multipliers', self.conn)
-    
-    def import_pricing_from_excel(self, file_path, sheet_name='PRICING MULTIPLIERS'):
-        """Import pricing multipliers from Excel"""
-        try:
-            pricing_df = pd.read_excel(file_path, sheet_name=sheet_name)
-            
-            # Normalize column names
-            cols = ["" if pd.isna(c) else str(c) for c in pricing_df.columns]
-            for idx in range(len(cols)):
-                name = cols[idx].strip()
-                if 1 <= idx <= 8:
-                    cols[idx] = "B-" + name if not name.upper().startswith("B-") else name
-                elif 9 <= idx <= 12:
-                    cols[idx] = "L-" + name if not name.upper().startswith("L-") else name
-            
-            pricing_df.columns = cols
-            
-            # Clear and reload pricing table
-            cursor = self.conn.cursor()
-            cursor.execute('DELETE FROM pricing_multipliers')
-            pricing_df.to_sql('pricing_multipliers', self.conn, if_exists='append', index=False)
-            self.conn.commit()
-            return True
-        except Exception as e:
-            print(f"Error importing pricing: {e}")
-            return False
-    
-    def log_upload(self, file_name, update_count, notes=''):
-        """Add entry to upload log"""
-        cursor = self.conn.cursor()
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute('''
-            INSERT INTO upload_log (file_name, file_creation_ts, update_count, notes)
-            VALUES (?, ?, ?, ?)
-        ''', (file_name, now, update_count, notes))
-        self.conn.commit()
-    
-    def close(self):
-        """Close database connection"""
-        if self.conn:
-            self.conn.close()
-
-# =============================================================================
-# CONFIGURATION & SETTINGS MANAGEMENT
-# =============================================================================
-
-class Settings:
-    """Manage application settings"""
-    
-    def __init__(self, settings_file='app_settings.json'):
-        self.settings_file = settings_file
-        self.defaults = {
-            'folders': {
-                'prodadds': '',
-                'output_folder': ''
-            },
-            'use_internal_db': True
-        }
-        self.load()
-    
-    def load(self):
-        """Load settings from file"""
-        if os.path.exists(self.settings_file):
-            with open(self.settings_file, 'r') as f:
-                self.data = json.load(f)
-        else:
-            self.data = self.defaults.copy()
-    
-    def save(self):
-        """Save settings to file"""
-        with open(self.settings_file, 'w') as f:
-            json.dump(self.data, f, indent=4)
-    
-    def get(self, key, default=None):
-        """Get a setting value"""
-        keys = key.split('.')
-        value = self.data
-        for k in keys:
-            value = value.get(k, default)
-            if value is None:
-                return default
-        return value
-    
-    def set(self, key, value):
-        """Set a setting value"""
-        keys = key.split('.')
-        data = self.data
-        for k in keys[:-1]:
-            if k not in data:
-                data[k] = {}
-            data = data[k]
-        data[keys[-1]] = value
-        self.save()
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def clean_description(desc):
-    """Clean description to 24 chars"""
-    if pd.isna(desc):
-        return ""
-    text = str(desc)
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r'(?<!\s)[\'\",/;\\](?!\s)', ' ', text)
-    text = re.sub(r'[\'\",/;\\]', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip().upper()[:24]
-
-def clean_description3(desc):
-    """Clean description (full length)"""
-    if pd.isna(desc):
-        return ""
-    text = str(desc)
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r'(?<!\s)[\'\",/;\\](?!\s)', ' ', text)
-    text = re.sub(r'[\'\",/;\\]', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip().upper()
-
-def default_1(val):
-    """Return val or 1 if NA"""
-    return val if pd.notna(val) else 1
-
-def get_vendor_default(db, vendor_no, field_name):
-    """Get vendor default from database"""
-    defaults = db.get_vendor_defaults(vendor_no)
-    if defaults:
-        return defaults.get(field_name)
-    return None
-
-# =============================================================================
-# SETTINGS WINDOW
-# =============================================================================
+    return missing
 
 def create_settings_window(settings, db):
-    """Create settings configuration window"""
+    """Create enhanced settings configuration window"""
     
     # Folder settings layout
     folder_layout = [
         [sg.Text('Folder Paths', font='Any 12 bold')],
-        [sg.Text('Product Adds Folder:'), sg.Input(settings.get('folders.prodadds', ''), key='folder_prodadds', size=(50,1)), 
+        [sg.Text('Product Adds Folder:'), 
+         sg.Input(settings.get('folders.prodadds', ''), key='folder_prodadds', size=(50,1)), 
          sg.FolderBrowse()],
-        [sg.Text('Output Folder:'), sg.Input(settings.get('folders.output_folder', ''), key='folder_output', size=(50,1)), 
+        [sg.Text('Output Folder:'), 
+         sg.Input(settings.get('folders.output_folder', ''), key='folder_output', size=(50,1)), 
          sg.FolderBrowse()],
-        [sg.HorizontalSeparator()],
-        [sg.Checkbox('Use internal database (recommended)', key='use_internal_db', 
-                     default=settings.get('use_internal_db', True))],
-        [sg.Text('Internal database location: app_data.db', font='Any 9 italic')],
+        [sg.Text('Archive Folder:'), 
+         sg.Input(settings.get('folders.archive', ''), key='folder_archive', size=(50,1)), 
+         sg.FolderBrowse()],
     ]
     
-    # Vendor defaults layout
+    # Vendor defaults layout with bulk upload
     vendor_layout = [
         [sg.Text('Vendor Defaults Management', font='Any 12 bold')],
+        [sg.Text('Individual Vendor Entry:', font='Any 11 bold')],
         [sg.Text('Vendor Number:'), sg.Input(key='vendor_no', size=(10,1)), 
          sg.Button('Load Vendor'), sg.Button('New Vendor')],
-        [sg.HorizontalSeparator()],
         [sg.Text('Brand Code:'), sg.Input(key='vendor_brandcode', size=(20,1))],
         [sg.Text('Product Category:'), sg.Input(key='vendor_prodcat', size=(20,1))],
         [sg.Text('Website Category:'), sg.Input(key='vendor_webcat', size=(20,1))],
         [sg.Text('Product Line:'), sg.Input(key='vendor_prodline', size=(20,1))],
         [sg.Text('Seasonal (y/n):'), sg.Input(key='vendor_seasonal', size=(5,1))],
-        [sg.Button('Save Vendor Defaults'), sg.Button('Delete Vendor')],
+        [sg.Button('Save Vendor'), sg.Button('Delete Vendor')],
+        [sg.HorizontalSeparator()],
+        [sg.Text('Bulk Upload:', font='Any 11 bold')],
+        [sg.Input(key='vendor_bulk_file', size=(50,1)), 
+         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
+        [sg.Button('Upload Vendor Bulk'), sg.Button('Download Vendor Template')],
         [sg.HorizontalSeparator()],
         [sg.Text('Existing Vendors:')],
         [sg.Listbox(values=[], key='vendor_list', size=(60, 10), enable_events=True)]
     ]
     
-    # Warehouse management layout
+    # Warehouse management layout with bulk upload
     warehouse_layout = [
         [sg.Text('Warehouse Configuration', font='Any 12 bold')],
         [sg.Table(values=[], headings=['Warehouse', 'Type', 'ARP Whse', 'Description', 'Active'],
-                 key='warehouse_table', size=(None, 15), enable_events=True)],
-        [sg.Button('Add Warehouse'), sg.Button('Edit Warehouse'), sg.Button('Refresh Warehouses')]
+                 key='warehouse_table', size=(None, 10), enable_events=True)],
+        [sg.Button('Refresh Warehouses')],
+        [sg.HorizontalSeparator()],
+        [sg.Text('Bulk Upload:', font='Any 11 bold')],
+        [sg.Input(key='warehouse_bulk_file', size=(50,1)), 
+         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
+        [sg.Button('Upload Warehouse Bulk'), sg.Button('Download Warehouse Template')]
     ]
     
-    # Pricing layout
+    # Pricing layout with bulk upload
     pricing_layout = [
         [sg.Text('Pricing Multipliers', font='Any 12 bold')],
         [sg.Text('Import pricing rules from Excel:')],
-        [sg.Input(key='pricing_import_file', size=(50,1)), sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
+        [sg.Input(key='pricing_import_file', size=(50,1)), 
+         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
         [sg.Text('Sheet Name:'), sg.Input('PRICING MULTIPLIERS', key='pricing_sheet', size=(30,1))],
-        [sg.Button('Import Pricing Rules')],
+        [sg.Button('Import Pricing Rules'), sg.Button('Download Pricing Template')],
         [sg.HorizontalSeparator()],
         [sg.Text('Current Pricing Rules:')],
         [sg.Table(values=[], headings=['Vendor', 'List Handling'], key='pricing_table', 
@@ -416,11 +124,11 @@ def update_pricing_table(window, db):
     """Update pricing table display"""
     pricing_df = db.get_pricing_multipliers()
     if not pricing_df.empty:
-        table_data = [[row['vendor'], row.get('vendor_list_handling', '')] 
+        table_data = [[row['vendor'], row.get('Vendor List Handling', '')] 
                      for _, row in pricing_df.iterrows()]
         window['pricing_table'].update(values=table_data)
 
-def handle_settings_window(settings, db):
+def handle_settings_window(settings, db, template_gen):
     """Handle settings window events"""
     window = create_settings_window(settings, db)
     
@@ -431,10 +139,9 @@ def handle_settings_window(settings, db):
             break
         
         if event == 'Save All Settings':
-            # Save folder settings
             settings.set('folders.prodadds', values['folder_prodadds'])
             settings.set('folders.output_folder', values['folder_output'])
-            settings.set('use_internal_db', values['use_internal_db'])
+            settings.set('folders.archive', values['folder_archive'])
             sg.popup('Settings saved successfully!')
         
         elif event == 'Load Vendor':
@@ -457,7 +164,7 @@ def handle_settings_window(settings, db):
             window['vendor_prodline'].update('')
             window['vendor_seasonal'].update('')
         
-        elif event == 'Save Vendor Defaults':
+        elif event == 'Save Vendor':
             vendor_no = values['vendor_no'].strip()
             if vendor_no:
                 vendor_data = {
@@ -480,22 +187,55 @@ def handle_settings_window(settings, db):
                 update_vendor_list(window, db)
                 sg.popup(f'Vendor {vendor_no} deleted')
         
+        elif event == 'Download Vendor Template':
+            path = template_gen.generate_vendor_bulk_template()
+            sg.popup(f'Template saved to:\n{path}')
+        
+        elif event == 'Upload Vendor Bulk':
+            if values['vendor_bulk_file']:
+                try:
+                    df = pd.read_excel(values['vendor_bulk_file'], sheet_name='Vendors')
+                    db.bulk_upload_vendors(df)
+                    update_vendor_list(window, db)
+                    sg.popup(f'Uploaded {len(df)} vendors successfully!')
+                except Exception as e:
+                    sg.popup_error(f'Error uploading vendors: {str(e)}')
+        
+        elif event == 'Download Warehouse Template':
+            path = template_gen.generate_warehouse_bulk_template()
+            sg.popup(f'Template saved to:\n{path}')
+        
+        elif event == 'Upload Warehouse Bulk':
+            if values['warehouse_bulk_file']:
+                try:
+                    df = pd.read_excel(values['warehouse_bulk_file'], sheet_name='Warehouses')
+                    db.bulk_upload_warehouses(df)
+                    update_warehouse_table(window, db)
+                    sg.popup(f'Uploaded {len(df)} warehouses successfully!')
+                except Exception as e:
+                    sg.popup_error(f'Error uploading warehouses: {str(e)}')
+        
+        elif event == 'Download Pricing Template':
+            path = template_gen.generate_pricing_bulk_template()
+            sg.popup(f'Template saved to:\n{path}')
+        
         elif event == 'Import Pricing Rules':
             if values['pricing_import_file']:
-                success = db.import_pricing_from_excel(
-                    values['pricing_import_file'], 
-                    values['pricing_sheet']
-                )
-                if success:
+                try:
+                    df = pd.read_excel(values['pricing_import_file'], 
+                                      sheet_name=values['pricing_sheet'])
+                    db.bulk_upload_pricing(df)
                     update_pricing_table(window, db)
                     sg.popup('Pricing rules imported successfully!')
-                else:
-                    sg.popup_error('Failed to import pricing rules')
+                except Exception as e:
+                    sg.popup_error(f'Failed to import pricing rules: {str(e)}')
         
         elif event == 'Refresh Warehouses':
             update_warehouse_table(window, db)
         
         elif event == 'Export Database':
+            from datetime import datetime
+            import shutil
             backup_path = f"app_data_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
             shutil.copy(db.db_path, backup_path)
             sg.popup(f'Database exported to:\n{backup_path}')
@@ -509,72 +249,79 @@ def handle_settings_window(settings, db):
     
     window.close()
 
-# =============================================================================
-# MAIN APPLICATION WINDOW
-# =============================================================================
-
 def create_main_window():
-    """Create the main application window"""
+    """Create the main application window with all enhancements"""
     
-    # Set theme - try different methods for compatibility
     try:
         sg.theme('LightBlue2')
-    except AttributeError:
-        try:
-            sg.ChangeLookAndFeel('LightBlue2')
-        except:
-            pass  # Use default theme
+    except:
+        pass
     
-    # Input method selection
+    # Input tab with template download
     input_tab = [
         [sg.Text('Choose Input Method:', font='Any 12 bold')],
         [sg.Radio('Upload Excel/CSV File', 'INPUT', key='input_file', default=True, enable_events=True)],
-        [sg.Input(key='file_path', size=(50,1)), sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"), ("CSV Files", "*.csv")))],
+        [sg.Input(key='file_path', size=(45,1)), 
+         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"), ("CSV Files", "*.csv"))),
+         sg.Button('Download Template', key='download_input_template')],
         [sg.Radio('Manual Form Entry', 'INPUT', key='input_form', enable_events=True)],
         [sg.HorizontalSeparator()],
-        [sg.Text('Or add single product manually:', font='Any 11 bold')],
+        [sg.Text('Manual Product Entry (Required: Product, Vendor No, Description, Repl Cost)', 
+                 font='Any 10 italic', key='required_notice', visible=False)],
         [sg.Column([
-            [sg.Text('Product:'), sg.Input(key='prod', size=(15,1))],
-            [sg.Text('Vendor No:'), sg.Input(key='vendor_no', size=(15,1))],
-            [sg.Text('Description:'), sg.Input(key='description', size=(40,1))],
-            [sg.Text('Core Flag (Y):'), sg.Input(key='core_flag', size=(5,1))],
-            [sg.Text('Repl Cost:'), sg.Input(key='repl_cost', size=(10,1))],
-            [sg.Text('Base Price:'), sg.Input(key='base_price', size=(10,1))],
-            [sg.Text('List Price:'), sg.Input(key='list_price', size=(10,1))],
+            [sg.Text('*Product:'), sg.Input(key='prod', size=(15,1))],
+            [sg.Text('*Vendor No:'), sg.Input(key='vendor_no', size=(15,1))],
+            [sg.Text('*Description:'), sg.Input(key='description', size=(40,1))],
+            [sg.Text(' Core Flag (Y):'), sg.Input(key='core_flag', size=(5,1))],
+            [sg.Text('*Repl Cost:'), sg.Input(key='repl_cost', size=(10,1))],
+            [sg.Text(' Base Price:'), sg.Input(key='base_price', size=(10,1))],
+            [sg.Text(' List Price:'), sg.Input(key='list_price', size=(10,1))],
         ], key='form_column', visible=False),
         sg.Column([
-            [sg.Text('Length:'), sg.Input(key='length', size=(10,1))],
-            [sg.Text('Width:'), sg.Input(key='width', size=(10,1))],
-            [sg.Text('Height:'), sg.Input(key='height', size=(10,1))],
-            [sg.Text('Weight:'), sg.Input(key='weight', size=(10,1))],
+            [sg.Text('Length:'), sg.Input(key='length', size=(10,1), default_text='1')],
+            [sg.Text('Width:'), sg.Input(key='width', size=(10,1), default_text='1')],
+            [sg.Text('Height:'), sg.Input(key='height', size=(10,1), default_text='1')],
+            [sg.Text('Weight:'), sg.Input(key='weight', size=(10,1), default_text='1')],
             [sg.Text('Brand Code:'), sg.Input(key='brand_code', size=(15,1))],
             [sg.Text('Product Cat:'), sg.Input(key='prod_cat', size=(15,1))],
             [sg.Text('Website Cat:'), sg.Input(key='web_cat', size=(15,1))],
         ], key='form_column2', visible=False)],
-        [sg.Button('Add to Batch', key='add_manual', visible=False)]
+        [sg.Button('Add to Batch', key='add_manual', visible=False),
+         sg.Button('Clear Form', key='clear_form', visible=False)],
+        [sg.Text('* = Required Field', font='Any 9 italic', key='required_legend', visible=False)]
     ]
     
     # Batch view
     batch_tab = [
         [sg.Text('Products in Current Batch:', font='Any 12 bold')],
-        [sg.Table(values=[], headings=['Product', 'Vendor', 'Description', 'Core', 'Repl Cost', 'Base Price', 'List Price'],
-                  key='batch_table', size=(None, 15), auto_size_columns=True, justification='left')],
+        [sg.Table(values=[], 
+                  headings=['Product', 'Vendor', 'Description', 'Core', 'Repl Cost', 'Base Price', 'List Price'],
+                  key='batch_table', size=(None, 15), auto_size_columns=True, 
+                  justification='left', enable_events=True)],
         [sg.Button('Remove Selected'), sg.Button('Clear Batch'), sg.Button('Export Batch to Excel')]
     ]
     
     # Output settings
     output_tab = [
         [sg.Text('Output Options:', font='Any 12 bold')],
-        [sg.Checkbox('Generate Step 1 Output (cp*.csv)', key='gen_step1', default=True)],
-        [sg.Checkbox('Generate Step 2 Output (cw*.csv)', key='gen_step2', default=True)],
+        [sg.Checkbox('Generate Step 1 Output (cp*.csv) - Product Master', 
+                     key='gen_step1', default=True)],
+        [sg.Checkbox('Generate Step 2 Output (cw*.csv) - Warehouse Data', 
+                     key='gen_step2', default=True)],
         [sg.Checkbox('Create Archive of Input Files', key='do_archive', default=True)],
         [sg.Checkbox('Update Upload Log', key='update_log', default=True)],
-        [sg.Text('Notes for Log:'), sg.Input(key='log_notes', size=(50,1))],
+        [sg.Text('Notes for Log:'), sg.Input(key='log_notes', size=(60,1))],
+        [sg.HorizontalSeparator()],
+        [sg.Text('Processing will:', font='Any 10 italic')],
+        [sg.Text('  • Apply vendor defaults to products', font='Any 9')],
+        [sg.Text('  • Calculate pricing based on rules', font='Any 9')],
+        [sg.Text('  • Generate warehouse records for active warehouses', font='Any 9')],
+        [sg.Text('  • Create hashed output filenames', font='Any 9')],
     ]
     
     # Main layout
     layout = [
-        [sg.MenuBar([['File', ['Settings', 'Exit']], ['Help', ['About']]])],
+        [sg.MenuBar([['File', ['Settings', 'Exit']], ['Help', ['About', 'User Guide']]])],
         [sg.TabGroup([
             [sg.Tab('Input', input_tab)],
             [sg.Tab('Batch', batch_tab)],
@@ -584,108 +331,26 @@ def create_main_window():
         [sg.Button('Process', size=(15,1), button_color=('white', 'green')), 
          sg.Button('Clear All', size=(15,1)), 
          sg.Button('Exit', size=(15,1))],
-        [sg.Multiline(size=(100, 10), key='output_log', autoscroll=True, disabled=True)]
+        [sg.Multiline(size=(120, 12), key='output_log', autoscroll=True, disabled=True,
+                     font='Courier 9')]
     ]
     
-    window = sg.Window('Product Adds Management System', layout, finalize=True)
+    window = sg.Window('Product Adds Management System', layout, finalize=True, 
+                      resizable=True, size=(1000, 700))
     return window
-
-# =============================================================================
-# PROCESSING FUNCTIONS
-# =============================================================================
-
-def process_step1(df, db, output_folder):
-    """Process Step 1 - Product adds"""
-    
-    log_messages = []
-    records = []
-    
-    for _, row in df.iterrows():
-        try:
-            prod = str(row['PRODUCT']).strip()
-            vendor_no = int(float(row['VENDOR NO']))
-            core_flag = str(row.get('CORE FLAG (Y)', '')).strip().upper()
-            prodtype = 'r' if core_flag == 'Y' else ''
-            
-            # Get defaults from database
-            prodline = get_vendor_default(db, vendor_no, 'default_prodline')
-            repl_cost = row.get('REPL COST', None)
-            base_price = row.get('BASE PRICE', None)
-            list_price = row.get('LIST PRICE', None)
-            
-            # Clean descriptions
-            description1 = clean_description(row['DESCRIPTION'])
-            description3 = clean_description3(row['DESCRIPTION'])
-            
-            # Dimensions
-            length = default_1(row.get('LENGTH', 1))
-            width = default_1(row.get('WIDTH', 1))
-            height = default_1(row.get('HEIGHT', 1))
-            weight = default_1(row.get('WEIGHT', 1))
-            cubes = length * width * height
-            
-            # Get vendor defaults
-            brandcode = row.get('BRAND CODE') or get_vendor_default(db, vendor_no, 'default_brandcode')
-            prodcat = row.get('PRODUCT CAT') or get_vendor_default(db, vendor_no, 'default_prodcat')
-            webcat = row.get('WEBSITE CAT') or get_vendor_default(db, vendor_no, 'default_webcat')
-            seasonal = get_vendor_default(db, vendor_no, 'seasonal_flag')
-            
-            # Core handling
-            impliedcoreprod = dirtycoreprod = impliedqty = graceperiod = ''
-            if core_flag == 'Y':
-                prodtype = 'r'
-                impliedcoreprod = "IC" + prod
-                dirtycoreprod = "DC" + prod
-                impliedqty = '1'
-                graceperiod = '36'
-                if vendor_no == 360:
-                    description1 = "CONTROL - ADD 55.00 CORE"
-                elif vendor_no == 825:
-                    description1 = "CONTROL - ADD 60.00 CORE"
-            
-            slchgdt = datetime.today().strftime("%m/%d/%y")
-            
-            # Build record (simplified - full 166 columns in actual implementation)
-            base_record = [prod, description1, "", description3, "", "", "", "", "",
-                          weight, cubes, length, width, height, 'EA']
-            # ... add remaining columns
-            
-            records.append(base_record)
-            
-            # IC/DC records if core
-            if core_flag == 'Y':
-                # Add IC and DC records (simplified)
-                pass
-            
-            log_messages.append(f"✓ Processed: {prod}")
-            
-        except Exception as e:
-            log_messages.append(f"✗ Error processing row: {str(e)}")
-    
-    # Export
-    day_of_year = datetime.today().timetuple().tm_yday
-    seconds = datetime.today().second + datetime.today().minute * 60
-    hash_part = format(seconds % (36**3), '03x')
-    output_filename = f"cp{day_of_year:03}{hash_part}.csv"
-    output_path = os.path.join(output_folder, output_filename)
-    
-    export_df = pd.DataFrame(records)
-    export_df.to_csv(output_path, index=False, header=False)
-    
-    log_messages.append(f"\n✓ Step 1 output saved: {output_filename}")
-    return output_path, log_messages
-
-# =============================================================================
-# MAIN APPLICATION LOGIC
-# =============================================================================
 
 def main():
     """Main application entry point"""
     
+    # Initialize components
     settings = Settings()
     db = AppDatabase()
+    template_gen = TemplateGenerator()
     window = create_main_window()
     batch_data = []
+    
+    # Generate templates on first run
+    template_gen.generate_all_templates()
     
     while True:
         event, values = window.read()
@@ -698,87 +363,171 @@ def main():
             window['form_column'].update(visible=True)
             window['form_column2'].update(visible=True)
             window['add_manual'].update(visible=True)
+            window['clear_form'].update(visible=True)
+            window['required_notice'].update(visible=True)
+            window['required_legend'].update(visible=True)
         elif event == 'input_file':
             window['form_column'].update(visible=False)
             window['form_column2'].update(visible=False)
             window['add_manual'].update(visible=False)
+            window['clear_form'].update(visible=False)
+            window['required_notice'].update(visible=False)
+            window['required_legend'].update(visible=False)
         
         # Settings menu
         if event == 'Settings':
-            handle_settings_window(settings, db)
+            handle_settings_window(settings, db, template_gen)
+        
+        # Download input template
+        if event == 'download_input_template':
+            path = template_gen.generate_product_input_template()
+            sg.popup(f'Product input template saved to:\n{path}')
+            window['output_log'].update(f"Template saved: {path}\n", append=True)
+        
+        # Clear form
+        if event == 'clear_form':
+            for key in ['prod', 'vendor_no', 'description', 'core_flag', 'repl_cost',
+                       'base_price', 'list_price', 'brand_code', 'prod_cat', 'web_cat']:
+                window[key].update('')
+            window['length'].update('1')
+            window['width'].update('1')
+            window['height'].update('1')
+            window['weight'].update('1')
         
         # Add manual entry to batch
         if event == 'add_manual':
+            # Validate required fields
+            missing = validate_required_fields(values)
+            if missing:
+                sg.popup_error(f'Missing required fields:\n' + '\n'.join(f'  • {f}' for f in missing))
+                continue
+            
             try:
                 product_data = {
-                    'PRODUCT': values['prod'],
-                    'VENDOR NO': values['vendor_no'],
-                    'DESCRIPTION': values['description'],
-                    'CORE FLAG (Y)': values['core_flag'],
-                    'REPL COST': values['repl_cost'],
-                    'BASE PRICE': values['base_price'],
-                    'LIST PRICE': values['list_price'],
-                    'LENGTH': values['length'] or 1,
-                    'WIDTH': values['width'] or 1,
-                    'HEIGHT': values['height'] or 1,
-                    'WEIGHT': values['weight'] or 1,
-                    'BRAND CODE': values['brand_code'],
-                    'PRODUCT CAT': values['prod_cat'],
-                    'WEBSITE CAT': values['web_cat']
+                    'PRODUCT': values['prod'].strip(),
+                    'VENDOR NO': int(values['vendor_no']),
+                    'DESCRIPTION': values['description'].strip(),
+                    'CORE FLAG (Y)': values['core_flag'].strip().upper(),
+                    'REPL COST': float(values['repl_cost']),
+                    'BASE PRICE': float(values['base_price']) if values['base_price'] else None,
+                    'LIST PRICE': float(values['list_price']) if values['list_price'] else None,
+                    'LENGTH': float(values['length']) if values['length'] else 1,
+                    'WIDTH': float(values['width']) if values['width'] else 1,
+                    'HEIGHT': float(values['height']) if values['height'] else 1,
+                    'WEIGHT': float(values['weight']) if values['weight'] else 1,
+                    'BRAND CODE': values['brand_code'].strip(),
+                    'PRODUCT CAT': values['prod_cat'].strip(),
+                    'WEBSITE CAT': values['web_cat'].strip()
                 }
+                
+                # Get vendor defaults
+                vendor_defaults = db.get_vendor_defaults(product_data['VENDOR NO'])
+                if vendor_defaults:
+                    if not product_data['BRAND CODE']:
+                        product_data['BRAND CODE'] = vendor_defaults.get('default_brandcode', '')
+                    if not product_data['PRODUCT CAT']:
+                        product_data['PRODUCT CAT'] = vendor_defaults.get('default_prodcat', '')
+                    if not product_data['WEBSITE CAT']:
+                        product_data['WEBSITE CAT'] = vendor_defaults.get('default_webcat', '')
+                    product_data['PRODLINE'] = vendor_defaults.get('default_prodline', '')
+                    product_data['SEASONAL'] = vendor_defaults.get('seasonal_flag', '')
+                
                 batch_data.append(product_data)
                 
                 # Update table
-                table_data = [[p['PRODUCT'], p['VENDOR NO'], p['DESCRIPTION'], 
-                              p.get('CORE FLAG (Y)', ''), p.get('REPL COST', ''),
-                              p.get('BASE PRICE', ''), p.get('LIST PRICE', '')] 
+                table_data = [[p['PRODUCT'], p['VENDOR NO'], p['DESCRIPTION'][:30], 
+                              p.get('CORE FLAG (Y)', ''), f"${p.get('REPL COST', 0):.2f}",
+                              f"${p.get('BASE PRICE') or 0:.2f}", 
+                              f"${p.get('LIST PRICE') or 0:.2f}"] 
                              for p in batch_data]
                 window['batch_table'].update(values=table_data)
                 
-                window['output_log'].update(f"Added {values['prod']} to batch\n", append=True)
+                window['output_log'].update(f"✓ Added {values['prod']} to batch\n", append=True)
+                
+                # Clear form after successful add
+                window.write_event_value('clear_form', '')
+                
+            except ValueError as e:
+                sg.popup_error(f"Invalid input: {str(e)}\nPlease check numeric fields.")
             except Exception as e:
                 sg.popup_error(f"Error adding to batch: {str(e)}")
         
         # Process button
         if event == 'Process':
             try:
-                window['output_log'].update("Starting processing...\n")
+                if not batch_data and not (values['input_file'] and values['file_path']):
+                    sg.popup_error("No input data! Either upload a file or add products manually.")
+                    continue
                 
-                # Determine input source
+                window['output_log'].update("=" * 80 + "\nStarting processing...\n")
+                
+                # Load data into staging table
                 if values['input_file'] and values['file_path']:
                     # Load from file
                     if values['file_path'].endswith('.xlsx'):
                         df = pd.read_excel(values['file_path'])
                     else:
                         df = pd.read_csv(values['file_path'])
+                    
                     window['output_log'].update(f"Loaded {len(df)} rows from file\n", append=True)
+                    
+                    # Validate required columns
+                    required_cols = ['PRODUCT', 'VENDOR NO', 'DESCRIPTION', 'REPL COST']
+                    missing_cols = [c for c in required_cols if c not in df.columns]
+                    if missing_cols:
+                        sg.popup_error(f'Missing required columns in file:\n' + 
+                                      '\n'.join(f'  • {c}' for c in missing_cols))
+                        continue
+                    
+                    # Add to staging
+                    for _, row in df.iterrows():
+                        product_dict = row.to_dict()
+                        db.add_to_staging(product_dict)
                 
                 elif batch_data:
                     # Use batch data
-                    df = pd.DataFrame(batch_data)
-                    window['output_log'].update(f"Using {len(df)} products from batch\n", append=True)
+                    window['output_log'].update(f"Using {len(batch_data)} products from batch\n", 
+                                               append=True)
+                    for product in batch_data:
+                        db.add_to_staging(product)
                 
-                else:
-                    sg.popup_error("No input data selected!")
-                    continue
-                
-                output_folder = settings.get('folders.prodadds', '.')
+                output_folder = settings.get('folders.output_folder') or '.'
                 
                 # Process Step 1
                 if values['gen_step1']:
-                    output_path, messages = process_step1(df, db, output_folder)
+                    window['output_log'].update("\n--- Step 1: Product Master ---\n", append=True)
+                    output_path, messages = process_step1(db, output_folder)
                     for msg in messages:
                         window['output_log'].update(msg + "\n", append=True)
                 
-                # Process Step 2 (simplified)
+                # Process Step 2
                 if values['gen_step2']:
-                    window['output_log'].update("Step 2 processing would run here...\n", append=True)
+                    window['output_log'].update("\n--- Step 2: Warehouse Data ---\n", append=True)
+                    output_path, messages = process_step2(db, output_folder)
+                    for msg in messages:
+                        window['output_log'].update(msg + "\n", append=True)
                 
-                window['output_log'].update("\n✓ Processing complete!\n", append=True)
-                sg.popup('Processing complete!', 'Check the output log for details.')
+                # Update log
+                if values['update_log']:
+                    staging_df = db.get_staging_data()
+                    db.log_upload(
+                        f"Processed {len(staging_df)} products",
+                        len(staging_df),
+                        values['log_notes']
+                    )
+                    window['output_log'].update("✓ Upload log updated\n", append=True)
+                
+                # Clear staging
+                db.clear_staging()
+                batch_data = []
+                window['batch_table'].update(values=[])
+                
+                window['output_log'].update("\n" + "=" * 80 + "\n✓ Processing complete!\n", 
+                                           append=True)
+                sg.popup('Processing Complete!', 'Check the output log for details.')
                 
             except Exception as e:
-                error_msg = f"Error during processing: {str(e)}"
+                error_msg = f"✗ Error during processing: {str(e)}"
                 window['output_log'].update(error_msg + "\n", append=True)
                 sg.popup_error(error_msg)
         
@@ -788,10 +537,71 @@ def main():
             window['batch_table'].update(values=[])
             window['output_log'].update("Batch cleared\n", append=True)
         
+        # Clear all
+        if event == 'Clear All':
+            batch_data = []
+            window['batch_table'].update(values=[])
+            window['output_log'].update('')
+            window['file_path'].update('')
+        
+        # Remove selected from batch
+        if event == 'Remove Selected':
+            if values['batch_table']:
+                selected_rows = values['batch_table']
+                for row_idx in sorted(selected_rows, reverse=True):
+                    if 0 <= row_idx < len(batch_data):
+                        removed = batch_data.pop(row_idx)
+                        window['output_log'].update(f"Removed {removed['PRODUCT']} from batch\n", 
+                                                   append=True)
+                
+                # Update table
+                table_data = [[p['PRODUCT'], p['VENDOR NO'], p['DESCRIPTION'][:30], 
+                              p.get('CORE FLAG (Y)', ''), f"${p.get('REPL COST', 0):.2f}",
+                              f"${p.get('BASE PRICE') or 0:.2f}", 
+                              f"${p.get('LIST PRICE') or 0:.2f}"] 
+                             for p in batch_data]
+                window['batch_table'].update(values=table_data)
+        
         # About
         if event == 'About':
-            sg.popup('Product Adds Management System', 'Version 1.0', 
-                    'Automates product addition workflows')
+            sg.popup('Product Adds Management System', 
+                    'Version 2.0',
+                    'Automated product addition with pricing and warehouse management',
+                    'Docker-ready application')
+        
+        # User Guide
+        if event == 'User Guide':
+            guide = """
+Quick Start Guide:
+
+1. Settings Setup (File → Settings):
+   • Configure folder paths
+   • Set up vendor defaults (or bulk upload)
+   • Configure warehouses
+   • Import pricing rules
+
+2. Adding Products:
+   • Option A: Upload Excel/CSV (download template first)
+   • Option B: Manual entry (fill required fields: Product, Vendor No, Description, Repl Cost)
+
+3. Processing:
+   • Review batch
+   • Select output options
+   • Click Process
+
+4. Output:
+   • cp*.csv: Product master data (Step 1)
+   • cw*.csv: Warehouse data (Step 2)
+
+Required Fields:
+  • Product
+  • Vendor No
+  • Description  
+  • Repl Cost
+
+For detailed instructions, see README.md
+"""
+            sg.popup_scrolled(guide, title='User Guide', size=(60, 30))
     
     db.close()
     window.close()
