@@ -1,0 +1,8 @@
+{
+    "folders": {
+        "prodadds": "./output",
+        "output_folder": "./output",
+        "archive": "./archive"
+    },
+    "use_internal_db": true
+}

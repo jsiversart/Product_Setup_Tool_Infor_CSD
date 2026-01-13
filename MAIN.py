@@ -38,6 +38,45 @@ def create_settings_window(settings, db):
          sg.Input(settings.get('folders.archive', ''), key='folder_archive', size=(50,1)), 
          sg.FolderBrowse()],
     ]
+    pricing_layout = [
+        [sg.Text('Pricing Multipliers', font='Any 12 bold')],
+
+        [sg.Text('Manual Pricing Rule Entry', font='Any 11 bold')],
+        [sg.Text('Vendor:'), sg.Input(key='pricing_vendor', size=(15,1))],
+        [sg.Text('List Handling:'), sg.Input(key='pricing_vendor_list_handling', size=(30,1))],
+        [sg.Text('Base Multiplier, < 1.5:'), sg.Input(key='pricing_b_1', size=(30,1))],
+        [sg.Text('Base Multiplier, 1.5-4.99:'), sg.Input(key='pricing_b_2', size=(30,1))],
+        [sg.Text('Base Multiplier, 5-49.99:'), sg.Input(key='pricing_b_3', size=(30,1))],
+        [sg.Text('Base Multiplier, 50-74.99:'), sg.Input(key='pricing_b_4', size=(30,1))],
+        [sg.Text('Base Multiplier, 75-99.99:'), sg.Input(key='pricing_b_5', size=(30,1))],
+        [sg.Text('Base Multiplier, 100-499.99:'), sg.Input(key='pricing_b_6', size=(30,1))],
+        [sg.Text('Base Multiplier, 500-999.99:'), sg.Input(key='pricing_b_7', size=(30,1))],
+        [sg.Text('Base Multiplier, 1000+:'), sg.Input(key='pricing_b_8', size=(30,1))],
+        [sg.Text('List Multiplier, < 5:'), sg.Input(key='pricing_l_1', size=(30,1))],
+        [sg.Text('List Multiplier, 5-49.99:'), sg.Input(key='pricing_l_2', size=(30,1))],
+        [sg.Text('List Multiplier, 50-74.99:'), sg.Input(key='pricing_l_3', size=(30,1))],
+        [sg.Text('List Multiplier, 75+:'), sg.Input(key='pricing_l_4', size=(30,1))],
+        [sg.Button('Save Pricing Rule'), sg.Button('Delete Pricing Rule')],
+        [sg.HorizontalSeparator()],
+        [sg.Text('Bulk Upload:', font='Any 11 bold')],
+        [sg.Input(key='pricing_bulk_file', size=(50,1)), 
+         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
+        [sg.Button('Upload Pricing Bulk'), sg.Button('Download Pricing Template')],
+        [sg.HorizontalSeparator()],
+        [sg.Text('Existing Pricing Rules:')],
+        [sg.Table(
+                values=[],
+                headings=[
+                    'Vendor','List Handling',
+                    'B1','B2','B3','B4','B5','B6','B7','B8',
+                    'L1','L2','L3','L4'
+                ],
+                key='pricing_table',
+                enable_events=True,
+                auto_size_columns=False,
+                col_widths=[10,18] + [6]*12,
+                justification='center'
+            )]]
     
     # Vendor defaults layout with bulk upload
     vendor_layout = [
@@ -74,19 +113,19 @@ def create_settings_window(settings, db):
         [sg.Button('Upload Warehouse Bulk'), sg.Button('Download Warehouse Template')]
     ]
     
-    # Pricing layout with bulk upload
-    pricing_layout = [
-        [sg.Text('Pricing Multipliers', font='Any 12 bold')],
-        [sg.Text('Import pricing rules from Excel:')],
-        [sg.Input(key='pricing_import_file', size=(50,1)), 
-         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
-        [sg.Text('Sheet Name:'), sg.Input('PRICING MULTIPLIERS', key='pricing_sheet', size=(30,1))],
-        [sg.Button('Import Pricing Rules'), sg.Button('Download Pricing Template')],
-        [sg.HorizontalSeparator()],
-        [sg.Text('Current Pricing Rules:')],
-        [sg.Table(values=[], headings=['Vendor', 'List Handling'], key='pricing_table', 
-                 size=(None, 10), auto_size_columns=False, col_widths=[15, 30])]
-    ]
+    # # Pricing layout with bulk upload
+    # pricing_layout = [
+    #     [sg.Text('Pricing Multipliers', font='Any 12 bold')],
+    #     [sg.Text('Import pricing rules from Excel:')],
+    #     [sg.Input(key='pricing_import_file', size=(50,1)), 
+    #      sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
+    #     [sg.Text('Sheet Name:'), sg.Input('PRICING MULTIPLIERS', key='pricing_sheet', size=(30,1))],
+    #     [sg.Button('Import Pricing Rules'), sg.Button('Download Pricing Template')],
+    #     [sg.HorizontalSeparator()],
+    #     [sg.Text('Current Pricing Rules:')],
+    #     [sg.Table(values=[], headings=['Vendor', 'List Handling'], key='pricing_table', 
+    #              size=(None, 10), auto_size_columns=False, col_widths=[15, 30])]
+    # ]
     
     # Main layout
     layout = [
@@ -120,13 +159,11 @@ def update_warehouse_table(window, db):
     table_data = [[w[0], w[1], w[2] or '', w[3], 'Yes' if w[4] else 'No'] for w in warehouses]
     window['warehouse_table'].update(values=table_data)
 
+
 def update_pricing_table(window, db):
-    """Update pricing table display"""
-    pricing_df = db.get_pricing_multipliers()
-    if not pricing_df.empty:
-        table_data = [[row['vendor'], row.get('Vendor List Handling', '')] 
-                     for _, row in pricing_df.iterrows()]
-        window['pricing_table'].update(values=table_data)
+    rows = db.get_pricing_multipliers()  # must return tuples
+    window['pricing_table'].update(values=rows)
+
 
 def handle_settings_window(settings, db, template_gen):
     """Handle settings window events"""
@@ -186,6 +223,79 @@ def handle_settings_window(settings, db, template_gen):
                 db.delete_vendor(int(vendor_no))
                 update_vendor_list(window, db)
                 sg.popup(f'Vendor {vendor_no} deleted')
+
+       
+        
+        elif event == 'Save Pricing Rule':
+            vendor = values['pricing_vendor'].strip()
+            list_handling = values['pricing_vendor_list_handling'].strip()
+
+            if not vendor:
+                sg.popup_error('Vendor is required')
+                continue
+
+            def safe_float(val):
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return None
+
+            base_mults = [safe_float(values[f'pricing_b_{i}']) for i in range(1, 9)]
+            list_mults = [safe_float(values[f'pricing_l_{i}']) for i in range(1, 5)]
+
+            if any(v is None for v in base_mults + list_mults):
+                sg.popup_error('All multiplier fields must be numeric')
+                continue
+
+            db.save_pricing_rule(
+                vendor,
+                list_handling,
+                *base_mults,
+                *list_mults
+            )
+
+            update_pricing_table(window, db)
+            sg.popup(f'Pricing rule saved for {vendor}')
+
+
+        elif event == 'Delete Pricing Rule':
+
+            vendor = values['pricing_vendor'].strip()
+
+            if not vendor:
+                sg.popup_error('Vendor is required to delete')
+                continue
+
+            if sg.popup_yes_no(f'Delete pricing rule for {vendor}?') != 'Yes':
+                continue
+
+            db.delete_pricing_rule(vendor)
+            update_pricing_table(window, db)
+
+            for key in values:
+                if key.startswith('pricing_'):
+                    window[key].update('')
+
+            sg.popup(f'Pricing rule deleted for {vendor}')
+
+        elif event == 'pricing_table' and values['pricing_table']:
+            row = values['pricing_table'][0]
+
+            vendor = row[0]
+            list_handling = row[1]
+            base_mults = row[2:10]   # b1–b8
+            list_mults = row[10:14] # l1–l4
+
+            window['pricing_vendor'].update(vendor)
+            window['pricing_vendor_list_handling'].update(list_handling)
+
+            for i, val in enumerate(base_mults, start=1):
+                window[f'pricing_b_{i}'].update(val)
+
+            for i, val in enumerate(list_mults, start=1):
+                window[f'pricing_l_{i}'].update(val)
+
+           
         
         elif event == 'Download Vendor Template':
             path = template_gen.generate_vendor_bulk_template()
