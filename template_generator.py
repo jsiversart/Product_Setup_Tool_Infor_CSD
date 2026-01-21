@@ -1,6 +1,8 @@
 # app/template_generator.py
 import pandas as pd
 from pathlib import Path
+import openpyxl
+from openpyxl.styles import Font, PatternFill
 
 class TemplateGenerator:
     """Generate Excel templates for various uploads"""
@@ -11,27 +13,8 @@ class TemplateGenerator:
     
     def generate_product_input_template(self):
         """Generate product input template"""
-        columns = [
-            'PRODUCT',
-            'VENDOR NO',
-            'DESCRIPTION',
-            'CORE FLAG (Y)',
-            'REPL COST',
-            'BASE PRICE',
-            'LIST PRICE',
-            'LENGTH',
-            'WIDTH',
-            'HEIGHT',
-            'WEIGHT',
-            'BRAND CODE',
-            'PRODUCT CAT',
-            'WEBSITE CAT',
-            'PRODLINE',
-            'SEASONAL'
-        ]
-        
-        # Create sample row
-        sample_data = {
+        # Create sample data
+        sample_data = pd.DataFrame([{
             'PRODUCT': 'SAMPLE123',
             'VENDOR NO': 100,
             'DESCRIPTION': 'Sample Product Description',
@@ -48,46 +31,51 @@ class TemplateGenerator:
             'WEBSITE CAT': 'WEBCAT1',
             'PRODLINE': 'LINE1',
             'SEASONAL': 'n'
-        }
+        }])
         
-        df = pd.DataFrame([sample_data])
+        instructions = pd.DataFrame({
+            'Field': ['PRODUCT', 'VENDOR NO', 'DESCRIPTION', 'CORE FLAG (Y)', 
+                     'REPL COST', 'BASE PRICE', 'LIST PRICE', 'SEASONAL'],
+            'Required': ['Yes', 'Yes', 'Yes', 'No', 'Yes', 'No', 'No', 'No'],
+            'Description': [
+                'Product SKU/Part Number (unique identifier)',
+                'Vendor number (must match vendor defaults)',
+                'Product description (will be cleaned to 24 chars)',
+                'Enter Y if this is a core product, leave blank otherwise',
+                'Replacement cost from vendor',
+                'Optional: Override calculated base price',
+                'Optional: Override calculated list price',
+                'Enter y for seasonal products, n for standard'
+            ]
+        })
+        
         output_path = self.template_dir / 'product_input_template.xlsx'
         
+        # Write using openpyxl for better control
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Products', index=False)
-            
-            # Add instructions sheet
-            instructions = pd.DataFrame({
-                'Field': ['PRODUCT', 'VENDOR NO', 'DESCRIPTION', 'CORE FLAG (Y)', 
-                         'REPL COST', 'BASE PRICE', 'LIST PRICE', 'SEASONAL'],
-                'Required': ['Yes', 'Yes', 'Yes', 'No', 'Yes', 'No', 'No', 'No'],
-                'Description': [
-                    'Product SKU/Part Number (unique identifier)',
-                    'Vendor number (must match vendor defaults)',
-                    'Product description (will be cleaned to 24 chars)',
-                    'Enter Y if this is a core product, leave blank otherwise',
-                    'Replacement cost from vendor',
-                    'Optional: Override calculated base price',
-                    'Optional: Override calculated list price',
-                    'Enter y for seasonal products, n for standard'
-                ]
-            })
+            sample_data.to_excel(writer, sheet_name='Products', index=False)
             instructions.to_excel(writer, sheet_name='Instructions', index=False)
+            
+            # Auto-adjust column widths
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
         
         return str(output_path)
     
     def generate_vendor_bulk_template(self):
         """Generate vendor bulk upload template"""
-        columns = [
-            'vendor_no',
-            'default_brandcode',
-            'default_prodcat',
-            'default_webcat',
-            'default_prodline',
-            'seasonal_flag'
-        ]
-        
-        sample_data = [
+        sample_data = pd.DataFrame([
             {
                 'vendor_no': 100,
                 'default_brandcode': 'BRAND1',
@@ -104,33 +92,46 @@ class TemplateGenerator:
                 'default_prodline': 'PRODUCTLINE2',
                 'seasonal_flag': 'y'
             }
-        ]
+        ])
         
-        df = pd.DataFrame(sample_data)
+        instructions = pd.DataFrame({
+            'Field': ['vendor_no', 'default_brandcode', 'default_prodcat', 
+                     'default_webcat', 'default_prodline', 'seasonal_flag'],
+            'Description': [
+                'Unique vendor number',
+                'Default brand code for this vendor',
+                'Default product category',
+                'Default website category',
+                'Default product line',
+                'Enter y for seasonal, n for standard'
+            ]
+        })
+        
         output_path = self.template_dir / 'vendor_bulk_upload.xlsx'
         
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Vendors', index=False)
-            
-            instructions = pd.DataFrame({
-                'Field': ['vendor_no', 'default_brandcode', 'default_prodcat', 
-                         'default_webcat', 'default_prodline', 'seasonal_flag'],
-                'Description': [
-                    'Unique vendor number',
-                    'Default brand code for this vendor',
-                    'Default product category',
-                    'Default website category',
-                    'Default product line',
-                    'Enter y for seasonal, n for standard'
-                ]
-            })
+            sample_data.to_excel(writer, sheet_name='Vendors', index=False)
             instructions.to_excel(writer, sheet_name='Instructions', index=False)
+            
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
         
         return str(output_path)
     
     def generate_warehouse_bulk_template(self):
         """Generate warehouse bulk upload template"""
-        sample_data = [
+        sample_data = pd.DataFrame([
             {
                 'warehouse': 25,
                 'type': 'D',
@@ -148,52 +149,48 @@ class TemplateGenerator:
             {
                 'warehouse': 10,
                 'type': 'B',
-                'arpwhse': '',
+                'arpwhse': None,
                 'description': 'Branch 10',
                 'active': 1
             }
-        ]
+        ])
         
-        df = pd.DataFrame(sample_data)
+        instructions = pd.DataFrame({
+            'Field': ['warehouse', 'type', 'arpwhse', 'description', 'active'],
+            'Description': [
+                'Unique warehouse number',
+                'D for Distribution Center, B for Branch',
+                'ARP warehouse number (for D type only)',
+                'Warehouse description',
+                '1 for active, 0 for inactive'
+            ]
+        })
+        
         output_path = self.template_dir / 'warehouse_bulk_upload.xlsx'
         
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Warehouses', index=False)
-            
-            instructions = pd.DataFrame({
-                'Field': ['warehouse', 'type', 'arpwhse', 'description', 'active'],
-                'Description': [
-                    'Unique warehouse number',
-                    'D for Distribution Center, B for Branch',
-                    'ARP warehouse number (for D type only)',
-                    'Warehouse description',
-                    '1 for active, 0 for inactive'
-                ]
-            })
+            sample_data.to_excel(writer, sheet_name='Warehouses', index=False)
             instructions.to_excel(writer, sheet_name='Instructions', index=False)
+            
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
         
         return str(output_path)
     
     def generate_pricing_bulk_template(self):
         """Generate pricing rules bulk upload template"""
-        columns = [
-            'vendor',
-            'Vendor List Handling',
-            'B-0.01-1.49',
-            'B-1.5-4.99',
-            'B-5-49.99',
-            'B-50-74.99',
-            'B-75-99.99',
-            'B-100-499.99',
-            'B-500-999.99',
-            'B-1000-999999',
-            'L-0.01-4.99',
-            'L-5-49.99.1',
-            'L-50-74.99.1',
-            'L-75-99999'
-        ]
-        
-        sample_data = [
+        sample_data = pd.DataFrame([
             {
                 'vendor': 'Standard',
                 'Vendor List Handling': 'list_or_base1.1',
@@ -226,41 +223,48 @@ class TemplateGenerator:
                 'L-50-74.99.1': 1.80,
                 'L-75-99999': 1.70
             }
-        ]
+        ])
         
-        df = pd.DataFrame(sample_data)
+        instructions = pd.DataFrame({
+            'Field': ['vendor', 'Vendor List Handling', 'B-* columns', 'L-* columns'],
+            'Description': [
+                'Vendor number or "Standard" for default rules',
+                'Options: list_or_base1.1 (use list or base*1.1) or take_min (use minimum of list or calculated)',
+                'Base price multipliers for different cost ranges (multiply repl cost by these)',
+                'List price multipliers for different cost ranges'
+            ]
+        })
+        
         output_path = self.template_dir / 'pricing_bulk_upload.xlsx'
         
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='PRICING MULTIPLIERS', index=False)
-            
-            instructions = pd.DataFrame({
-                'Field': ['vendor', 'Vendor List Handling', 'B-* columns', 'L-* columns'],
-                'Description': [
-                    'Vendor number or "Standard" for default rules',
-                    'Options: list_or_base1.1 (use list or base*1.1) or take_min (use minimum of list or calculated)',
-                    'Base price multipliers for different cost ranges (multiply repl cost by these)',
-                    'List price multipliers for different cost ranges'
-                ]
-            })
+            sample_data.to_excel(writer, sheet_name='PRICING MULTIPLIERS', index=False)
             instructions.to_excel(writer, sheet_name='Instructions', index=False)
+            
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
         
         return str(output_path)
     
     def generate_all_templates(self):
         """Generate all templates and return paths"""
-        templates = {
-            'product_input': self.generate_product_input_template(),
-            'vendor_bulk': self.generate_vendor_bulk_template(),
-            'warehouse_bulk': self.generate_warehouse_bulk_template(),
-            'pricing_bulk': self.generate_pricing_bulk_template()
-        }
+        templates = {}
+        try:
+            templates['product_input'] = self.generate_product_input_template()
+            templates['vendor_bulk'] = self.generate_vendor_bulk_template()
+            templates['warehouse_bulk'] = self.generate_warehouse_bulk_template()
+            templates['pricing_bulk'] = self.generate_pricing_bulk_template()
+        except Exception as e:
+            print(f"Error generating templates: {str(e)}")
         return templates
-
-# Generate templates on module import
-if __name__ == '__main__':
-    gen = TemplateGenerator()
-    templates = gen.generate_all_templates()
-    print("Templates generated:")
-    for name, path in templates.items():
-        print(f"  {name}: {path}")

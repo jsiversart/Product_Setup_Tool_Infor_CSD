@@ -22,6 +22,36 @@ def validate_required_fields(values):
     
     return missing
 
+def validate_vendors_against_pricing(db, staging_df):
+    pricing_vendors = set(
+        v[0] for v in db.conn.execute(
+            "SELECT DISTINCT vendor FROM pricing_map"
+        ).fetchall()
+    )
+
+    product_vendors = set(
+        str(v) for v in staging_df['VENDOR NO'].dropna().unique()
+    )
+
+    missing = sorted(product_vendors - pricing_vendors)
+
+    if missing:
+        raise ValueError(
+            "Pricing rules missing for vendor(s): "
+            + ", ".join(missing)
+            + "\n\nPlease add pricing rules under Settings → Pricing Rules."
+        )
+    
+def vendor_has_pricing(db, vendor_no):
+    row = db.conn.execute(
+        "SELECT 1 FROM pricing_map WHERE vendor = ? LIMIT 1",
+        (str(vendor_no),)
+    ).fetchone()
+
+    return row is not None
+
+
+
 def create_settings_window(settings, db):
     """Create enhanced settings configuration window"""
     
@@ -102,17 +132,36 @@ def create_settings_window(settings, db):
     
     # Warehouse management layout with bulk upload
     warehouse_layout = [
-        [sg.Text('Warehouse Configuration', font='Any 12 bold')],
-        [sg.Table(values=[], headings=['Warehouse', 'Type', 'ARP Whse', 'Description', 'Active'],
-                 key='warehouse_table', size=(None, 10), enable_events=True)],
-        [sg.Button('Refresh Warehouses')],
-        [sg.HorizontalSeparator()],
-        [sg.Text('Bulk Upload:', font='Any 11 bold')],
-        [sg.Input(key='warehouse_bulk_file', size=(50,1)), 
-         sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
-        [sg.Button('Upload Warehouse Bulk'), sg.Button('Download Warehouse Template')]
-    ]
-    
+            [sg.Text('Warehouse Configuration', font='Any 12 bold')],
+            [sg.Text('Individual Warehouse Entry:', font='Any 11 bold')],
+            [sg.Text('Warehouse Number:'), sg.Input(key='wh_number', size=(10,1)), 
+            sg.Button('Load Warehouse'), sg.Button('New Warehouse')],
+            [sg.Text('Type:'), sg.Combo(['D', 'B'], key='wh_type', size=(5,1), readonly=True),
+            sg.Text('(D=Distribution, B=Branch)')],
+            [sg.Text('ARP Whse:'), sg.Input(key='wh_arpwhse', size=(10,1)),
+            sg.Text('(Only for Distribution centers)')],
+            [sg.Text('Description:'), sg.Input(key='wh_description', size=(40,1))],
+            [sg.Checkbox('Active', key='wh_active', default=True)],
+            [sg.Button('Save Warehouse'), sg.Button('Delete Warehouse')],
+            [sg.HorizontalSeparator()],
+            [sg.Text('Existing Warehouses:')],
+            [sg.Table(
+                values=[], 
+                headings=['Warehouse', 'Type', 'ARP Whse', 'Description', 'Active'],
+                key='warehouse_table', 
+                size=(None, 10), 
+                enable_events=True,
+                auto_size_columns=False,
+                col_widths=[10, 8, 10, 30, 8]
+            )],
+            [sg.Button('Refresh Warehouses')],
+            [sg.HorizontalSeparator()],
+            [sg.Text('Bulk Upload:', font='Any 11 bold')],
+            [sg.Input(key='warehouse_bulk_file', size=(50,1)), 
+            sg.FileBrowse(file_types=(("Excel Files", "*.xlsx"),))],
+            [sg.Button('Upload Warehouse Bulk'), sg.Button('Download Warehouse Template')]
+        ]
+
     # # Pricing layout with bulk upload
     # pricing_layout = [
     #     [sg.Text('Pricing Multipliers', font='Any 12 bold')],
@@ -356,7 +405,119 @@ def handle_settings_window(settings, db, template_gen):
                 vendor_no = vendor_str.split(':')[0].replace('Vendor ', '').strip()
                 window['vendor_no'].update(vendor_no)
                 window.write_event_value('Load Vendor', '')
-    
+        
+        elif event == 'Load Warehouse':
+            wh_num = values['wh_number'].strip()
+            if wh_num:
+                try:
+                    warehouses = db.get_warehouses()
+                    wh_data = [w for w in warehouses if w[0] == int(wh_num)]
+                    if wh_data:
+                        wh = wh_data[0]
+                        window['wh_type'].update(wh[1])
+                        window['wh_arpwhse'].update(wh[2] if wh[2] else '')
+                        window['wh_description'].update(wh[3])
+                        window['wh_active'].update(bool(wh[4]))
+                    else:
+                        sg.popup(f'Warehouse {wh_num} not found')
+                except ValueError:
+                    sg.popup_error('Invalid warehouse number')
+
+        elif event == 'New Warehouse':
+            window['wh_number'].update('')
+            window['wh_type'].update('D')
+            window['wh_arpwhse'].update('')
+            window['wh_description'].update('')
+            window['wh_active'].update(True)
+
+        elif event == 'Save Warehouse':
+            wh_num = values['wh_number'].strip()
+            wh_type = values['wh_type']
+            
+            if not wh_num or not wh_type:
+                sg.popup_error('Warehouse number and type are required')
+                continue
+            
+            try:
+                wh_number = int(wh_num)
+                arpwhse = None
+                
+                # Validate ARP warehouse for Distribution centers
+                if wh_type == 'D':
+                    arpwhse_str = values['wh_arpwhse'].strip()
+                    if arpwhse_str:
+                        try:
+                            arpwhse = int(arpwhse_str)
+                        except ValueError:
+                            sg.popup_error('ARP Whse must be a number')
+                            continue
+                
+                description = values['wh_description'].strip()
+                active = 1 if values['wh_active'] else 0
+                
+                db.save_warehouse(wh_number, wh_type, arpwhse, description, active)
+                update_warehouse_table(window, db)
+                sg.popup(f'Warehouse {wh_number} saved successfully!')
+                
+            except ValueError:
+                sg.popup_error('Invalid warehouse number - must be numeric')
+            except Exception as e:
+                sg.popup_error(f'Error saving warehouse: {str(e)}')
+
+        elif event == 'Delete Warehouse':
+            wh_num = values['wh_number'].strip()
+            if wh_num:
+                try:
+                    if sg.popup_yes_no(f'Delete warehouse {wh_num}?') == 'Yes':
+                        db.delete_warehouse(int(wh_num))
+                        update_warehouse_table(window, db)
+                        sg.popup(f'Warehouse {wh_num} deleted')
+                        
+                        # Clear form
+                        window['wh_number'].update('')
+                        window['wh_type'].update('D')
+                        window['wh_arpwhse'].update('')
+                        window['wh_description'].update('')
+                        window['wh_active'].update(True)
+                except Exception as e:
+                    sg.popup_error(f'Error deleting warehouse: {str(e)}')
+            else:
+                sg.popup_error('Please enter a warehouse number to delete')
+
+        elif event == 'warehouse_table' and values['warehouse_table']:
+            # Load selected warehouse into form
+            selected_row = values['warehouse_table'][0]
+            table_data = window['warehouse_table'].get()
+            if selected_row < len(table_data):
+                row = table_data[selected_row]
+                window['wh_number'].update(str(row[0]))
+                window['wh_type'].update(row[1])
+                window['wh_arpwhse'].update(str(row[2]) if row[2] else '')
+                window['wh_description'].update(row[3])
+                window['wh_active'].update(row[4] == 'Yes')
+
+        elif event == 'Upload Pricing Bulk':
+            if values['pricing_bulk_file']:
+                try:
+                    df = pd.read_excel(values['pricing_bulk_file'], sheet_name='PRICING MULTIPLIERS')
+                    
+                    # Validate columns
+                    required_cols = ['vendor', 'Vendor List Handling', 
+                                'B-0.01-1.49', 'B-1.5-4.99', 'B-5-49.99', 'B-50-74.99',
+                                'B-75-99.99', 'B-100-499.99', 'B-500-999.99', 'B-1000-999999',
+                                'L-0.01-4.99', 'L-5-49.99.1', 'L-50-74.99.1', 'L-75-99999']
+                    
+                    missing = [c for c in required_cols if c not in df.columns]
+                    if missing:
+                        sg.popup_error(f'Missing required columns:\n' + '\n'.join(missing))
+                        continue
+                    
+                    db.bulk_upload_pricing(df)
+                    update_pricing_table(window, db)
+                    sg.popup(f'Uploaded {len(df)} pricing rules successfully!')
+                except Exception as e:
+                    sg.popup_error(f'Error uploading pricing rules: {str(e)}')
+        
     window.close()
 
 def create_main_window():
@@ -506,30 +667,39 @@ def main():
         
         # Add manual entry to batch
         if event == 'add_manual':
-            # Validate required fields
             missing = validate_required_fields(values)
             if missing:
-                sg.popup_error(f'Missing required fields:\n' + '\n'.join(f'  • {f}' for f in missing))
+                sg.popup_error(
+                    "Missing required fields:\n" + "\n".join(missing)
+                )
                 continue
-            
+
             try:
+                vendor_no = int(values['vendor_no'])
+
+                # 🔴 HARD STOP — pricing validation
+                if not vendor_has_pricing(db, vendor_no):
+                    sg.popup_error(
+                        f"Vendor {vendor_no} has no Pricing Rules configured.\n\n"
+                        "Go to Settings → Pricing Rules to set up pricing rules for vendor, then try again."
+                    )
+                    continue   # ⬅ DO NOT ADD TO BATCH
                 product_data = {
-                    'PRODUCT': values['prod'].strip(),
-                    'VENDOR NO': int(values['vendor_no']),
-                    'DESCRIPTION': values['description'].strip(),
-                    'CORE FLAG (Y)': values['core_flag'].strip().upper(),
-                    'REPL COST': float(values['repl_cost']),
-                    'BASE PRICE': float(values['base_price']) if values['base_price'] else None,
-                    'LIST PRICE': float(values['list_price']) if values['list_price'] else None,
-                    'LENGTH': float(values['length']) if values['length'] else 1,
-                    'WIDTH': float(values['width']) if values['width'] else 1,
-                    'HEIGHT': float(values['height']) if values['height'] else 1,
-                    'WEIGHT': float(values['weight']) if values['weight'] else 1,
-                    'BRAND CODE': values['brand_code'].strip(),
-                    'PRODUCT CAT': values['prod_cat'].strip(),
-                    'WEBSITE CAT': values['web_cat'].strip()
-                }
-                
+                        'PRODUCT': values['prod'].strip(),
+                        'VENDOR NO': int(values['vendor_no']),
+                        'DESCRIPTION': values['description'].strip(),
+                        'CORE FLAG (Y)': values['core_flag'].strip().upper(),
+                        'REPL COST': float(values['repl_cost']),
+                        'BASE PRICE': float(values['base_price']) if values['base_price'] else None,
+                        'LIST PRICE': float(values['list_price']) if values['list_price'] else None,
+                        'LENGTH': float(values['length']) if values['length'] else 1,
+                        'WIDTH': float(values['width']) if values['width'] else 1,
+                        'HEIGHT': float(values['height']) if values['height'] else 1,
+                        'WEIGHT': float(values['weight']) if values['weight'] else 1,
+                        'BRAND CODE': values['brand_code'].strip(),
+                        'PRODUCT CAT': values['prod_cat'].strip(),
+                        'WEBSITE CAT': values['web_cat'].strip()
+                }        
                 # Get vendor defaults
                 vendor_defaults = db.get_vendor_defaults(product_data['VENDOR NO'])
                 if vendor_defaults:
@@ -543,7 +713,7 @@ def main():
                     product_data['SEASONAL'] = vendor_defaults.get('seasonal_flag', '')
                 
                 batch_data.append(product_data)
-                
+                sg.popup("Product added to batch.")
                 # Update table
                 table_data = [[p['PRODUCT'], p['VENDOR NO'], p['DESCRIPTION'][:30], 
                               p.get('CORE FLAG (Y)', ''), f"${p.get('REPL COST', 0):.2f}",
@@ -556,7 +726,7 @@ def main():
                 
                 # Clear form after successful add
                 window.write_event_value('clear_form', '')
-                
+
             except ValueError as e:
                 sg.popup_error(f"Invalid input: {str(e)}\nPlease check numeric fields.")
             except Exception as e:
@@ -606,20 +776,21 @@ def main():
                 # Process Step 1
                 if values['gen_step1']:
                     window['output_log'].update("\n--- Step 1: Product Master ---\n", append=True)
-                    output_path, messages = process_step1(db, output_folder)
+                    step1_df, output_path, messages = process_step1(db, output_folder)
                     for msg in messages:
                         window['output_log'].update(msg + "\n", append=True)
                 
                 # Process Step 2
                 if values['gen_step2']:
                     window['output_log'].update("\n--- Step 2: Warehouse Data ---\n", append=True)
-                    output_path, messages = process_step2(db, output_folder)
+                    output_path, messages = process_step2(db, step1_df, output_folder)
                     for msg in messages:
                         window['output_log'].update(msg + "\n", append=True)
                 
                 # Update log
                 if values['update_log']:
                     staging_df = db.get_staging_data()
+                    validate_vendors_against_pricing(db, staging_df)
                     db.log_upload(
                         f"Processed {len(staging_df)} products",
                         len(staging_df),

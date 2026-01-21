@@ -285,6 +285,95 @@ class AppDatabase:
         ))
         
         self.conn.commit()
+
+    def save_pricing_rule(self, vendor, list_handling, b1, b2, b3, b4, b5, b6, b7, b8, l1, l2, l3, l4):
+        """Save or update a pricing rule"""
+        cursor = self.conn.cursor()
+        
+        # Check if vendor rule exists
+        cursor.execute('SELECT id FROM pricing_map WHERE vendor = ?', (str(vendor),))
+        exists = cursor.fetchone()
+        
+        if exists:
+            # Update existing rule
+            cursor.execute('''
+                UPDATE pricing_map 
+                SET "Vendor List Handling" = ?,
+                    "B-0.01-1.49" = ?,
+                    "B-1.5-4.99" = ?,
+                    "B-5-49.99" = ?,
+                    "B-50-74.99" = ?,
+                    "B-75-99.99" = ?,
+                    "B-100-499.99" = ?,
+                    "B-500-999.99" = ?,
+                    "B-1000-999999" = ?,
+                    "L-0.01-4.99" = ?,
+                    "L-5-49.99.1" = ?,
+                    "L-50-74.99.1" = ?,
+                    "L-75-99999" = ?
+                WHERE vendor = ?
+            ''', (list_handling, b1, b2, b3, b4, b5, b6, b7, b8, l1, l2, l3, l4, str(vendor)))
+        else:
+            # Insert new rule
+            cursor.execute('''
+                INSERT INTO pricing_map 
+                (vendor, "Vendor List Handling", 
+                "B-0.01-1.49", "B-1.5-4.99", "B-5-49.99", "B-50-74.99", 
+                "B-75-99.99", "B-100-499.99", "B-500-999.99", "B-1000-999999",
+                "L-0.01-4.99", "L-5-49.99.1", "L-50-74.99.1", "L-75-99999")
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (str(vendor), list_handling, b1, b2, b3, b4, b5, b6, b7, b8, l1, l2, l3, l4))
+        
+        self.conn.commit()
+
+    def delete_pricing_rule(self, vendor):
+        """Delete a pricing rule"""
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM pricing_map WHERE vendor = ?', (str(vendor),))
+        self.conn.commit()
+
+    def get_pricing_multipliers(self):
+        """Get pricing multipliers as list of tuples for table display"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT vendor, "Vendor List Handling",
+                "B-0.01-1.49", "B-1.5-4.99", "B-5-49.99", "B-50-74.99",
+                "B-75-99.99", "B-100-499.99", "B-500-999.99", "B-1000-999999",
+                "L-0.01-4.99", "L-5-49.99.1", "L-50-74.99.1", "L-75-99999"
+            FROM pricing_map
+            ORDER BY CASE WHEN vendor = 'Standard' THEN 0 ELSE 1 END, vendor
+        ''')
+        return cursor.fetchall()
+
+    def save_warehouse(self, warehouse, wh_type, arpwhse, description, active):
+        """Save or update a warehouse"""
+        cursor = self.conn.cursor()
+        
+        # Check if warehouse exists
+        cursor.execute('SELECT warehouse FROM warehouse_info WHERE warehouse = ?', (warehouse,))
+        exists = cursor.fetchone()
+        
+        if exists:
+            # Update existing
+            cursor.execute('''
+                UPDATE warehouse_info 
+                SET type = ?, arpwhse = ?, description = ?, active = ?
+                WHERE warehouse = ?
+            ''', (wh_type, arpwhse, description, active, warehouse))
+        else:
+            # Insert new
+            cursor.execute('''
+                INSERT INTO warehouse_info (warehouse, type, arpwhse, description, active)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (warehouse, wh_type, arpwhse, description, active))
+        
+        self.conn.commit()
+
+    def delete_warehouse(self, warehouse):
+        """Delete a warehouse"""
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM warehouse_info WHERE warehouse = ?', (warehouse,))
+        self.conn.commit()
     
     def get_staging_data(self):
         """Get all data from staging table"""
@@ -305,6 +394,8 @@ class AppDatabase:
             VALUES (?, ?, ?, ?)
         ''', (file_name, now, update_count, notes))
         self.conn.commit()
+
+    
     
     def close(self):
         """Close database connection"""
