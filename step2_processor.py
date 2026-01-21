@@ -1,348 +1,522 @@
 # app/step2_processor.py
-# produces ICSW record upload
+# Produces ICSW record upload using pure functional approach
 import pandas as pd
-import sqlite3
+import numpy as np
 from datetime import datetime
 import os
 
-def process_step2(db, step1_dataframe, output_folder):
-    """
-    Process Step 2 - Warehouse data generation (cw*.csv)
-    Mirrors the logic from your standalone script
-    """
+
+# ============================================================================
+# PURE FUNCTIONS - No side effects, return new data
+# ============================================================================
+
+def calculate_base_price(repl_cost, prodline, pricing_rule):
+    """Pure function: Calculate base price for a single product"""
+    # CORE products use repl cost
+    if "CORE" in (prodline or ""):
+        return round(repl_cost, 2)
     
+    # Tiered pricing based on replacement cost
+    if repl_cost < 1.5:
+        return round(repl_cost * pricing_rule["B-0.01-1.49"], 2)
+    elif repl_cost < 5:
+        return round(repl_cost * pricing_rule["B-1.5-4.99"], 2)
+    elif repl_cost < 50:
+        return round(repl_cost * pricing_rule["B-5-49.99"], 2)
+    elif repl_cost < 75:
+        return round(repl_cost * pricing_rule["B-50-74.99"], 2)
+    elif repl_cost < 100:
+        return round(repl_cost * pricing_rule["B-75-99.99"], 2)
+    elif repl_cost < 500:
+        return round(repl_cost * pricing_rule["B-100-499.99"], 2)
+    elif repl_cost < 1000:
+        return round(repl_cost * pricing_rule["B-500-999.99"], 2)
+    else:
+        return round(repl_cost * pricing_rule["B-1000-999999"], 2)
+
+
+def calculate_list_price_calc(repl_cost, prodline, pricing_rule):
+    """Pure function: Calculate theoretical list price"""
+    if "CORE" in (prodline or ""):
+        return round(repl_cost, 2)
+    
+    if repl_cost < 5:
+        return round(repl_cost * pricing_rule["L-0.01-4.99"], 2)
+    elif repl_cost < 50:
+        return round(repl_cost * pricing_rule["L-5-49.99.1"], 2)
+    elif repl_cost < 75:
+        return round(repl_cost * pricing_rule["L-50-74.99.1"], 2)
+    else:
+        return round(repl_cost * pricing_rule["L-75-99999"], 2)
+
+
+def resolve_final_list_price(list_price_calc, vendor_list_price, base_price, 
+                              list_handling, prodline):
+    """Pure function: Determine final list price based on vendor rules"""
+    # CORE products always use calculated
+    if "CORE" in (prodline or ""):
+        return list_price_calc
+    
+    # No handling rule → use calculated
+    if pd.isna(list_handling):
+        return list_price_calc
+    
+    # list_or_base1.1: use vendor list OR base*1.1, whichever is higher
+    if list_handling == "list_or_base1.1":
+        if pd.isna(vendor_list_price):
+            return list_price_calc
+        return max(vendor_list_price, base_price * 1.1)
+    
+    # take_min: use minimum of vendor list or calculated
+    if list_handling == "take_min":
+        if pd.isna(vendor_list_price):
+            return list_price_calc
+        return min(vendor_list_price, list_price_calc)
+    
+    # Unknown handling → fallback to calculated
+    return list_price_calc
+
+
+def calculate_usage_months(seasonal_flag):
+    """Pure function: Calculate usage months based on seasonal flag"""
+    return 3 if seasonal_flag == 'y' else 6
+
+
+def calculate_usage_control(seasonal_flag):
+    """Pure function: Calculate usage control based on seasonal flag"""
+    return 'f' if seasonal_flag == 'y' else 'b'
+
+
+def calculate_warehouse_fields(warehouse_type):
+    """Pure function: Calculate warehouse-specific fields"""
+    if warehouse_type == 'D':
+        return {
+            'arptype': 'V',
+            'ordcalcty': 'E',
+            'leadtmavg': 21
+        }
+    else:
+        return {
+            'arptype': 'W',
+            'ordcalcty': 'M',
+            'leadtmavg': 2
+        }
+
+
+# ============================================================================
+# DATA TRANSFORMATION FUNCTIONS
+# ============================================================================
+
+def validate_pricing_map(db, staging_df):
+    """Validate pricing map has all required vendors"""
+    pricing_df = pd.read_sql("SELECT * FROM pricing_map", db.conn)
+    
+    if pricing_df.empty:
+        raise Exception(
+            "pricing_map is empty. Upload pricing rules before running Step 2."
+        )
+    
+    vendors = staging_df["VENDOR NO"].astype(str).unique()
+    pricing_vendors = set(pricing_df["vendor"].astype(str)) | {"Standard"}
+    
+    missing = sorted(set(vendors) - pricing_vendors)
+    
+    if missing:
+        raise Exception(
+            f"Missing pricing rules for vendor(s): {', '.join(missing)}\n"
+            f"Add these vendors to pricing rules or they will use 'Standard' pricing."
+        )
+    
+    return pricing_df
+
+
+def validate_warehouses(db):
+    """Get active warehouses"""
+    whse_df = pd.read_sql("SELECT * FROM warehouse_info WHERE active = 1", db.conn)
+    
+    if whse_df.empty:
+        raise Exception(
+            "warehouse_info is empty. Add warehouse info in settings."
+        )
+    
+    return whse_df
+
+
+def apply_pricing(staging_df, pricing_df):
+    """Apply pricing rules to products"""
+    df = staging_df.copy()
+    
+    # Ensure vendor columns are strings for merge
+    df["VENDOR NO"] = df["VENDOR NO"].astype(str)
+    pricing_df = pricing_df.copy()
+    pricing_df["vendor"] = pricing_df["vendor"].astype(str)
+    
+    # Merge pricing rules (left join to keep all products)
+    df = df.merge(
+        pricing_df,
+        left_on="VENDOR NO",
+        right_on="vendor",
+        how="left",
+        validate="many_to_one"
+    )
+    
+    # For vendors without specific rules, use 'Standard'
+    standard_pricing = pricing_df[pricing_df["vendor"] == "Standard"]
+    if not standard_pricing.empty:
+        mask = df["vendor"].isna()
+        for col in pricing_df.columns:
+            if col not in ["vendor", "id"]:
+                df.loc[mask, col] = standard_pricing[col].iloc[0]
+    
+    # Apply pure pricing functions using vectorized operations
+    df["baseprice"] = df.apply(
+        lambda row: calculate_base_price(
+            row["REPL COST"], 
+            row.get("PRODLINE"),
+            row
+        ),
+        axis=1
+    )
+    
+    df["listprice_calc"] = df.apply(
+        lambda row: calculate_list_price_calc(
+            row["REPL COST"],
+            row.get("PRODLINE"),
+            row
+        ),
+        axis=1
+    )
+    
+    df["listprice"] = df.apply(
+        lambda row: resolve_final_list_price(
+            row["listprice_calc"],
+            row.get("LIST PRICE"),
+            row["baseprice"],
+            row.get("Vendor List Handling"),
+            row.get("PRODLINE")
+        ),
+        axis=1
+    )
+    
+    # Calculate usage fields
+    df["usgmths"] = df.get("SEASONAL", "n").apply(calculate_usage_months)
+    df["usagectrl"] = df.get("SEASONAL", "n").apply(calculate_usage_control)
+    
+    return df
+
+
+def expand_warehouses(priced_df, whse_df):
+    """Cross join products with warehouses"""
+    df = priced_df.copy()
+    wh = whse_df.copy()
+    
+    # Create merge key for cross join
+    df['_key'] = 1
+    wh['_key'] = 1
+    
+    # Cross join
+    expanded = df.merge(wh, on='_key', how='outer').drop('_key', axis=1)
+    
+    # Apply warehouse-specific calculations
+    wh_fields = expanded['type'].apply(calculate_warehouse_fields)
+    expanded['arptype'] = wh_fields.apply(lambda x: x['arptype'])
+    expanded['ordcalcty'] = wh_fields.apply(lambda x: x['ordcalcty'])
+    expanded['leadtmavg'] = wh_fields.apply(lambda x: x['leadtmavg'])
+    
+    return expanded
+
+
+def build_icsw(expanded_df, today_str):
+    """Build final ICSW output dataframe - matches SQL column order exactly"""
+    df = expanded_df.copy()
+    
+    # Format warehouse number as 2-digit string
+    df['whse_formatted'] = df['warehouse'].apply(lambda x: f"{int(x):02d}")
+    
+    # Build ICSW structure with columns in exact SQL SELECT order
+    icsw_df = pd.DataFrame({
+        "prod": df["PRODUCT"],
+        "whse": df["whse_formatted"],
+        "enterdt": today_str,
+        "statustype": "O",
+        "serlottype": "",
+        "snpocd": "",
+        "reservety": "",
+        "reservedays": "",
+        "prodpreference": "",
+        "pricetype": "DEAL",
+        "baseprice": df["baseprice"],
+        "listprice": df["listprice"],
+        "smanalfl": "",
+        "autofillfl": "",
+        "boshortfl": "",
+        "countfl": "",
+        "arptype": df["arptype"],
+        "arppushfl": "",
+        "arpvendno": df["VENDOR NO"].astype("Int64"),
+        "arpwhse": pd.to_numeric(df["arpwhse"], errors="coerce").astype("Int64"),
+        "prodline": df.get("PRODLINE", ""),
+        "vendprod": "",
+        "famgrptype": "",
+        "ncnr": "",
+        "rebatety": "",
+        "rebsubty": "",
+        "autoesrcbofl": "",
+        "binloc1": "",
+        "binloc2": "",
+        "wmfl": "",
+        "wmallocty": "",
+        "bintype": "",
+        "wmpriority": "",
+        "wmrestrict": "",
+        "frtfreefl": "",
+        "frtextra1": "",
+        "frtextra2": "",
+        "unitbuy": "",
+        "unitconv1": "",
+        "unitediuom1": "",
+        "unitstnd": "",
+        "unitconv2": "",
+        "unitediuom2": "",
+        "unitwt": "",
+        "unitconv3": "",
+        "unitediuom3": "",
+        "safeallty": "D",
+        "safeallamt": 0,
+        "safetyfrzfl": "",
+        "usagerate": "",
+        "usgmths": df["usgmths"],
+        "usmthsfrzfl": "yes",
+        "usagectrl": df["usagectrl"],
+        "excludemovefl": "",
+        "orderpt": "",
+        "linept": "",
+        "ordqtyin": "",
+        "ordcalcty": df["ordcalcty"],
+        "ordptadjty": "",
+        "overreasin": "",
+        "surplusty": "",
+        "inclunavqty": "",
+        "rolloanusagefl": "",
+        "companyrank": "",
+        "whserank": "",
+        "rankfreezefl": "",
+        "threshrefer": "",
+        "minthreshold": "",
+        "minthreshexpdt": "",
+        "asqfl": "",
+        "asqdifffl": "",
+        "asqdiff": "",
+        "hi5fl": "",
+        "hi5difffl": "",
+        "hi5diff": "",
+        "leadtmavg": df["leadtmavg"],
+        "avgltdt": "",
+        "leadtmlast": "",
+        "lastltdt": "",
+        "leadtmprio": "",
+        "priorltdt": "",
+        "frozenltty": 999,
+        "class": "",
+        "classfrzfl": "",
+        "abcgmroiclass": "",
+        "abcsalesclass": "",
+        "abcqtyclass": "",
+        "abccustclass": "",
+        "abcoverexpdt": "",
+        "abcfinalclass": "",
+        "abcclassdt": "",
+        "seasbegmm": "",
+        "seasendmm": "",
+        "nodaysseas": "",
+        "ordqtyout": "",
+        "overreasout": "",
+        "seastrendmax": "",
+        "seastrendmin": "",
+        "seastrendexpdt": "",
+        "seastrendtyu": "",
+        "seastrendlyu": "",
+        "seasonfrzfl": "",
+        "taxtype": "",
+        "taxgroup": 1,
+        "taxablety": "V",
+        "nontaxtype": "",
+        "tariffcd": "",
+        "countryoforigin": "",
+        "gststatus": "",
+        "frozenmmyy": "",
+        "frozentype": "",
+        "frozenmos": "",
+        "acquiredt": "",
+        "so15fl": "",
+        "lastsodt": "",
+        "nodaysso": "",
+        "notimesso": "",
+        "availsodt": "",
+        "avgcost": df["REPL COST"],
+        "lastcost": "",
+        "replcost": df["REPL COST"],
+        "replcostdt": today_str,
+        "stndcost": "",
+        "stndcostdt": "",
+        "rebatecost": "",
+        "addoncost": "",
+        "datccost": "",
+        "baseyrcost": "",
+        "lastcostfor": "",
+        "replcostfor": "",
+        "qtyonhand": "",
+        "qtyunavail": "",
+        "reasunavty": "",
+        "custavgcost": "",
+        "custlastcost": "",
+        "custfixedcost": "",
+        "custqtyonhand": "",
+        "custqtyonorder": "",
+        "custqtyunavail": "",
+        "custqtyrcvd": "",
+        "custqtyburnoff": "",
+        "custavgcostburnoff": "",
+        "issueunytd": "",
+        "rcptunytd": "",
+        "retinunytd": "",
+        "retouunytd": "",
+        "rpt852dt": "",
+        "lastinvdt": "",
+        "lastrcptdt": "",
+        "lastpowtdt": "",
+        "priceupddt": "",
+        "lastcntdt": "",
+        "slchgdt": "",
+        "buyer": "",
+        "user1": "",
+        "user2": "",
+        "user3": "",
+        "user4": "",
+        "user5": "",
+        "user6": "",
+        "user7": "",
+        "user8": "",
+        "user9": "",
+        "user10": "",
+        "user11": "",
+        "user12": "",
+        "user13": "",
+        "user14": "",
+        "user15": "",
+        "user16": "",
+        "user17": "",
+        "user18": "",
+        "user19": "",
+        "user20": "",
+        "user21": "",
+        "user22": "",
+        "user23": "",
+        "user24": "",
+        "boxqty": "",
+        "caseqty": "",
+        "palletqty": "",
+        "whzone": "",
+        "bincntr": "",
+        "kitbuild": "",
+        "srcommcode1": "",
+        "srcommcode2": "",
+        "srmachine": "",
+        "srunitcnt": "",
+        "unitconv4": "",
+        "unitediuom4": "",
+        "regrindfl": "",
+        "laborprod": "",
+        "linkedprod": "",
+        "billonrcptfl": "",
+        "custonlyfl": "",
+        "rcvunavailfl": "",
+        "criticalfl": "",
+        "shelflifefl": "",
+        "edi852statuschgfl": "",
+        "suppwarrallowfl": "",
+        "recalcprodcostinv": "",
+        "recalcommcostinv": "",
+        "cutminlength": "",
+        "cutminty": "",
+        "cutminoutput": ""
+    })
+    
+    # Sort: warehouses 25, 50, then others; IC, DC, then regular products
+    icsw_df['_sort_whse'] = icsw_df['whse'].astype(int).map({25: 1, 50: 2}).fillna(3)
+    icsw_df['_sort_prod'] = icsw_df['prod'].apply(
+        lambda x: 1 if str(x).startswith('IC') else (2 if str(x).startswith('DC') else 3)
+    )
+    
+    icsw_df = icsw_df.sort_values(['_sort_whse', '_sort_prod', 'prod'])
+    icsw_df = icsw_df.drop(['_sort_whse', '_sort_prod'], axis=1)
+    
+    return icsw_df
+
+
+# ============================================================================
+# MAIN ORCHESTRATOR FUNCTION
+# ============================================================================
+
+def process_step2(db, step_2_df, output_folder):
+    """
+    Main orchestrator for Step 2 processing
+    """
     log_messages = []
     
     try:
-        # Generate hashed output filename
+        # Generate output filename
         day_of_year = datetime.today().timetuple().tm_yday
         seconds = datetime.today().second + datetime.today().minute * 60
         hash_part = format(seconds % (36**3), '03x')
         output_filename = f"cw{day_of_year:03}{hash_part}.csv"
         output_path = os.path.join(output_folder, output_filename)
         
-        # Verify pricing_map table exists and has data
-        pricing_df = pd.read_sql("SELECT * FROM pricing_map", db.conn)
-
-        if pricing_df.empty:
-            raise Exception(
-                "pricing_map is empty. Upload pricing rules before running Step 2."
-            )
+        today_str = datetime.today().strftime("%m/%d/%y")
         
-        vendors = step1_dataframe['VENDOR NO'].astype(str).unique()
-        pricing_vendors = set(pricing_df['vendor'].astype(str)) | {'Standard'}
-
-        missing = sorted(set(vendors) - pricing_vendors)
-
-        if missing:
-            raise Exception(
-                f"Missing pricing rules for vendor(s): {', '.join(missing)}"
-            )
-
-
+        # Get staging data
+        staging_df = step_2_df
+        if staging_df.empty:
+            raise Exception("No products in staging table")
+        log_messages.append(f"✓ Loaded {len(staging_df)} products from staging")
+        
+        # Validate and get pricing rules
+        pricing_df = validate_pricing_map(db, staging_df)
         log_messages.append("✓ Pricing map verified")
         
-        # Main query - exactly as in your script
-        query = """
-        WITH PRICING AS 
-        (SELECT PRODUCT as prod, 
-        CASE
-            WHEN PRODLINE like '%CORE' THEN "REPL COST"
-            WHEN "REPL COST" < 1.5 THEN ROUND("REPL COST"*p."B-0.01-1.49",2)
-            WHEN "REPL COST" < 5 THEN ROUND("REPL COST"*p."B-1.5-4.99",2)
-            WHEN "REPL COST" < 50 THEN ROUND("REPL COST"*p."B-5-49.99",2)
-            WHEN "REPL COST" < 75 THEN ROUND("REPL COST"*p."B-50-74.99",2)
-            WHEN "REPL COST" < 100 THEN ROUND("REPL COST"*p."B-75-99.99",2)
-            WHEN "REPL COST" < 500 THEN ROUND("REPL COST"*p."B-100-499.99",2)
-            WHEN "REPL COST" < 1000 THEN ROUND("REPL COST"*p."B-500-999.99",2)
-            ELSE ROUND("REPL COST"*p."B-1000-999999",2)
-        END AS baseprice,
-        CASE
-            WHEN PRODLINE like '%CORE' THEN "REPL COST"
-            WHEN "REPL COST" < 5 THEN ROUND("REPL COST"*p."L-0.01-4.99",2)
-            WHEN "REPL COST" < 50 THEN ROUND("REPL COST"*p."L-5-49.99.1",2)
-            WHEN "REPL COST" < 75 THEN ROUND("REPL COST"*p."L-50-74.99.1",2)
-            ELSE ROUND("REPL COST"*p."L-75-99999",2)
-            END AS listprice,
-            "Vendor List Handling" as vendlisthandling
-            from rawicswdata r 
-            LEFT JOIN pricing_map p ON 
-                CASE WHEN r."VENDOR NO" in (select distinct vendor from pricing_map) THEN p.Vendor = r."VENDOR NO"
-                ELSE p.Vendor = 'Standard' END)
-        SELECT
-        PRODUCT AS prod,
-        printf('%02d', warehouse) AS whse,
-        strftime('%m/%d', CURRENT_DATE) || '/' || substr(strftime('%Y', CURRENT_DATE), 3, 2) AS enterdt,
-        'O' AS statustype,
-        '' AS serlottype,
-        '' AS snpocd,
-        '' AS reservety,
-        '' AS reservedays,
-        '' AS prodpreference,
-        'DEAL' AS pricetype,
-        p.baseprice AS baseprice,
-        CASE
-            WHEN PRODLINE like '%CORE' THEN p.listprice
-            WHEN p.vendlisthandling is NULL then p.listprice
-            WHEN p.vendlisthandling = 'list_or_base1.1' then
-                CASE
-                    WHEN r."LIST PRICE" is null THEN p.listprice
-                    WHEN r."LIST PRICE" < p.baseprice THEN p.baseprice*1.1
-                    ELSE r."LIST PRICE"
-                END
-            WHEN p.vendlisthandling = 'take_min' THEN 
-                CASE WHEN r."LIST PRICE" is null THEN p.listprice
-                    ELSE MIN(r."LIST PRICE",p.listprice)
-                END
-            ELSE 'UNKNOWN LIST HANDLING!'
-        END AS listprice,
-        '' AS smanalfl,
-        '' AS autofillfl,
-        '' AS boshortfl,
-        '' AS countfl,
-        CASE 
-            WHEN w.Type = 'D' THEN 'V'
-            ELSE 'W'
-        END AS arptype,
-        '' AS arppushfl,
-        r."VENDOR NO" AS arpvendno,
-        CAST(
-            CASE 
-                WHEN w.Arpwhse IS NULL OR TRIM(w.Arpwhse) = '' THEN NULL
-                ELSE w.Arpwhse
-            END 
-        AS INT) AS arpwhse,
-        r.PRODLINE AS prodline,
-        '' AS vendprod,
-        '' AS famgrptype,
-        '' AS ncnr,
-        '' AS rebatety,
-        '' AS rebsubty,
-        '' AS autoesrcbofl,
-        '' AS binloc1,
-        '' AS binloc2,
-        '' AS wmfl,
-        '' AS wmallocty,
-        '' AS bintype,
-        '' AS wmpriority,
-        '' AS wmrestrict,
-        '' AS frtfreefl,
-        '' AS frtextra1,
-        '' AS frtextra2,
-        '' AS unitbuy,
-        '' AS unitconv1,
-        '' AS unitediuom1,
-        '' AS unitstnd,
-        '' AS unitconv2,
-        '' AS unitediuom2,
-        '' AS unitwt,
-        '' AS unitconv3,
-        '' AS unitediuom3,
-        'D' AS safeallty,
-        0 AS safeallamt,
-        '' AS safetyfrzfl,
-        '' AS usagerate,
-        CASE WHEN r.SEASONAL = 'y' THEN 3
-            ELSE 6
-        END AS usgmths,
-        'yes' AS usmthsfrzfl,
-        CASE WHEN r.SEASONAL = 'y' THEN 'f'
-            ELSE 'b'
-        END AS usagectrl,
-        '' AS excludemovefl,
-        '' AS orderpt,
-        '' AS linept,
-        '' AS ordqtyin,
-        CASE 
-            WHEN w.Type = 'D' THEN 'E'
-            ELSE 'M'
-        END AS ordcalcty,
-        '' AS ordptadjty,
-        '' AS overreasin,
-        '' AS surplusty,
-        '' AS inclunavqty,
-        '' AS rolloanusagefl,
-        '' AS companyrank,
-        '' AS whserank,
-        '' AS rankfreezefl,
-        '' AS threshrefer,
-        '' AS minthreshold,
-        '' AS minthreshexpdt,
-        '' AS asqfl,
-        '' AS asqdifffl,
-        '' AS asqdiff,
-        '' AS hi5fl,
-        '' AS hi5difffl,
-        '' AS hi5diff,
-        CASE 
-            WHEN w.Type = 'D' THEN 21
-            ELSE 2
-        END AS leadtmavg,
-        '' AS avgltdt,
-        '' AS leadtmlast,
-        '' AS lastltdt,
-        '' AS leadtmprio,
-        '' AS priorltdt,
-        999 AS frozenltty,
-        '' AS class,
-        '' AS classfrzfl,
-        '' AS abcgmroiclass,
-        '' AS abcsalesclass,
-        '' AS abcqtyclass,
-        '' AS abccustclass,
-        '' AS abcoverexpdt,
-        '' AS abcfinalclass,
-        '' AS abcclassdt,
-        '' AS seasbegmm,
-        '' AS seasendmm,
-        '' AS nodaysseas,
-        '' AS ordqtyout,
-        '' AS overreasout,
-        '' AS seastrendmax,
-        '' AS seastrendmin,
-        '' AS seastrendexpdt,
-        '' AS seastrendtyu,
-        '' AS seastrendlyu,
-        '' AS seasonfrzfl,
-        '' AS taxtype,
-        1 AS taxgroup,
-        'V' AS taxablety,
-        '' AS nontaxtype,
-        '' AS tariffcd,
-        '' AS countryoforigin,
-        '' AS gststatus,
-        '' AS frozenmmyy,
-        '' AS frozentype,
-        '' AS frozenmos,
-        '' AS acquiredt,
-        '' AS so15fl,
-        '' AS lastsodt,
-        '' AS nodaysso,
-        '' AS notimesso,
-        '' AS availsodt,
-        "REPL COST" AS avgcost,
-        '' AS lastcost,
-        "REPL COST" AS replcost,
-        strftime('%m/%d', CURRENT_DATE) || '/' || substr(strftime('%Y', CURRENT_DATE), 3, 2) AS replcostdt,
-        '' AS stndcost,
-        '' AS stndcostdt,
-        '' AS rebatecost,
-        '' AS addoncost,
-        '' AS datccost,
-        '' AS baseyrcost,
-        '' AS lastcostfor,
-        '' AS replcostfor,
-        '' AS qtyonhand,
-        '' AS qtyunavail,
-        '' AS reasunavty,
-        '' AS custavgcost,
-        '' AS custlastcost,
-        '' AS custfixedcost,
-        '' AS custqtyonhand,
-        '' AS custqtyonorder,
-        '' AS custqtyunavail,
-        '' AS custqtyrcvd,
-        '' AS custqtyburnoff,
-        '' AS custavgcostburnoff,
-        '' AS issueunytd,
-        '' AS rcptunytd,
-        '' AS retinunytd,
-        '' AS retouunytd,
-        '' AS rpt852dt,
-        '' AS lastinvdt,
-        '' AS lastrcptdt,
-        '' AS lastpowtdt,
-        '' AS priceupddt,
-        '' AS lastcntdt,
-        '' AS slchgdt,
-        '' AS buyer,
-        '' AS user1,
-        '' AS user2,
-        '' AS user3,
-        '' AS user4,
-        '' AS user5,
-        '' AS user6,
-        '' AS user7,
-        '' AS user8,
-        '' AS user9,
-        '' AS user10,
-        '' AS user11,
-        '' AS user12,
-        '' AS user13,
-        '' AS user14,
-        '' AS user15,
-        '' AS user16,
-        '' AS user17,
-        '' AS user18,
-        '' AS user19,
-        '' AS user20,
-        '' AS user21,
-        '' AS user22,
-        '' AS user23,
-        '' AS user24,
-        '' AS boxqty,
-        '' AS caseqty,
-        '' AS palletqty,
-        '' AS whzone,
-        '' AS bincntr,
-        '' AS kitbuild,
-        '' AS srcommcode1,
-        '' AS srcommcode2,
-        '' AS srmachine,
-        '' AS srunitcnt,
-        '' AS unitconv4,
-        '' AS unitediuom4,
-        '' AS regrindfl,
-        '' AS laborprod,
-        '' AS linkedprod,
-        '' AS billonrcptfl,
-        '' AS custonlyfl,
-        '' AS rcvunavailfl,
-        '' AS criticalfl,
-        '' AS shelflifefl,
-        '' AS edi852statuschgfl,
-        '' AS suppwarrallowfl,
-        '' AS recalcprodcostinv,
-        '' AS recalcommcostinv,
-        '' AS cutminlength,
-        '' AS cutminty,
-        '' AS cutminoutput
-        from rawicswdata r
-        cross join warehouse_info w
-        left join PRICING p on p.prod = r.PRODUCT
-        WHERE w.active = 1
-        ORDER BY
-            CASE warehouse
-                WHEN 25 THEN 1
-                WHEN 50 THEN 2
-                ELSE 3
-            END,
-            CASE 
-                WHEN PRODUCT LIKE 'IC%' THEN 1
-                WHEN PRODUCT LIKE 'DC%' THEN 2
-                ELSE 3
-            END;
-        """
+        # Validate and get warehouses
+        whse_df = validate_warehouses(db)
+        log_messages.append(f"✓ {len(whse_df)} active warehouses verified")
         
-        log_messages.append("✓ Executing warehouse query...")
+        # Apply pricing calculations
+        priced_df = apply_pricing(staging_df, pricing_df)
+        log_messages.append("✓ Pricing calculated")
         
-        # Execute query
-        result_df = pd.read_sql_query(query, db.conn)
+        # Expand to warehouses
+        expanded_df = expand_warehouses(priced_df, whse_df)
+        log_messages.append(f"✓ Expanded to {len(expanded_df)} warehouse records")
         
-        # Convert integer columns
-        int_cols = ["arpwhse", "arpvendno", "leadtmavg", "usgmths"]
-        for c in int_cols:
-            if c in result_df.columns:
-                result_df[c] = result_df[c].astype("Int64")
+        # Build ICSW output
+        icsw_df = build_icsw(expanded_df, today_str)
+        log_messages.append(f"✓ Built ICSW with {icsw_df.shape[1]} columns")
         
-        log_messages.append(f"✓ Generated {len(result_df)} warehouse records")
+        # Validate output
+        if icsw_df.isna().any().any():
+            null_cols = icsw_df.columns[icsw_df.isna().any()].tolist()
+            log_messages.append(f"⚠ Warning: Null values in columns: {null_cols}")
         
-        # Export to CSV
-        result_df.to_csv(output_path, index=False)
+        # Export
+        icsw_df.to_csv(output_path, index=False)
         log_messages.append(f"✓ Step 2 output saved: {output_filename}")
+        log_messages.append(f"✓ Total records: {len(icsw_df)}")
+
+        #clear staging table
+     
         
         return output_path, log_messages
         
     except Exception as e:
         log_messages.append(f"✗ Error in Step 2 processing: {str(e)}")
+        import traceback
+        log_messages.append(f"Traceback: {traceback.format_exc()}")
         return None, log_messages

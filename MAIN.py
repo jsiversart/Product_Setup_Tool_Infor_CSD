@@ -592,12 +592,15 @@ def create_main_window():
     
     # Main layout
     layout = [
-        [sg.MenuBar([['File', ['Settings', 'Exit']], ['Help', ['About', 'User Guide']]])],
-        [sg.TabGroup([
-            [sg.Tab('Input', input_tab)],
-            [sg.Tab('Batch', batch_tab)],
-            [sg.Tab('Output', output_tab)]
-        ])],
+    [sg.MenuBar([
+        ['File', ['Settings', 'View Upload Log', '---', 'Exit']], 
+        ['Help', ['About', 'User Guide']]
+    ])],
+    [sg.TabGroup([
+        [sg.Tab('Input', input_tab)],
+        [sg.Tab('Batch', batch_tab)],
+        [sg.Tab('Output', output_tab)]
+    ])],
         [sg.HorizontalSeparator()],
         [sg.Button('Process', size=(15,1), button_color=('white', 'green')), 
          sg.Button('Clear All', size=(15,1)), 
@@ -648,6 +651,59 @@ def main():
         # Settings menu
         if event == 'Settings':
             handle_settings_window(settings, db, template_gen)
+
+        # After the Settings event handler, add:
+
+        if event == 'View Upload Log':
+            try:
+                log_df = pd.read_sql("SELECT * FROM upload_log ORDER BY id DESC", db.conn)
+                
+                if log_df.empty:
+                    sg.popup('Upload Log is empty.\n\nNo processing runs recorded yet.')
+                else:
+                    # Format the log for display
+                    log_window_layout = [
+                        [sg.Text('Upload Log History', font='Any 14 bold')],
+                        [sg.Table(
+                            values=log_df.values.tolist(),
+                            headings=log_df.columns.tolist(),
+                            auto_size_columns=True,
+                            display_row_numbers=False,
+                            justification='left',
+                            num_rows=min(25, len(log_df)),
+                            key='log_table',
+                            enable_events=True,
+                            alternating_row_color='lightblue'
+                        )],
+                        [sg.Button('Export to Excel'), sg.Button('Clear Log'), sg.Button('Close')]
+                    ]
+                    
+                    log_window = sg.Window('Upload Log', log_window_layout, modal=True, size=(900, 600))
+                    
+                    while True:
+                        log_event, log_values = log_window.read()
+                        
+                        if log_event in (sg.WIN_CLOSED, 'Close'):
+                            break
+                        
+                        elif log_event == 'Export to Excel':
+                            from datetime import datetime
+                            export_path = f"upload_log_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                            log_df.to_excel(export_path, index=False)
+                            sg.popup(f'Log exported to:\n{export_path}')
+                        
+                        elif log_event == 'Clear Log':
+                            if sg.popup_yes_no('Clear entire upload log?\n\nThis cannot be undone!') == 'Yes':
+                                db.conn.execute('DELETE FROM upload_log')
+                                db.conn.commit()
+                                sg.popup('Upload log cleared')
+                                log_window.close()
+                                break
+                    
+                    log_window.close()
+        
+            except Exception as e:
+                sg.popup_error(f'Error viewing log: {str(e)}')
         
         # Download input template
         if event == 'download_input_template':
