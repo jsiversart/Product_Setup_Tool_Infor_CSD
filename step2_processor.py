@@ -61,11 +61,13 @@ def resolve_final_list_price(list_price_calc, vendor_list_price, base_price,
     if pd.isna(list_handling):
         return list_price_calc
     
-    # list_or_base1.1: use vendor list OR base*1.1, whichever is higher
+    # list_or_base1.1: use vendor list unless it's below base price, then floor at base*1.1
     if list_handling == "list_or_base1.1":
         if pd.isna(vendor_list_price):
             return list_price_calc
-        return max(vendor_list_price, base_price * 1.1)
+        if vendor_list_price < base_price:
+            return round(base_price * 1.1, 2)
+        return vendor_list_price
     
     # take_min: use minimum of vendor list or calculated
     if list_handling == "take_min":
@@ -73,9 +75,11 @@ def resolve_final_list_price(list_price_calc, vendor_list_price, base_price,
             return list_price_calc
         return min(vendor_list_price, list_price_calc)
     
-    # Unknown handling → fallback to calculated
+        # Unknown handling → prefer vendor list if available
+    if not pd.isna(vendor_list_price):
+        return vendor_list_price
+    
     return list_price_calc
-
 
 def calculate_usage_months(seasonal_flag):
     """Pure function: Calculate usage months based on seasonal flag"""
@@ -116,8 +120,10 @@ def validate_pricing_map(db, staging_df):
             "pricing_map is empty. Upload pricing rules before running Step 2."
         )
     
-    vendors = staging_df["VENDOR NO"].astype(str).unique()
-    pricing_vendors = set(pricing_df["vendor"].astype(str)) 
+    # CORE-prodline products use repl_cost directly, no pricing rule needed
+    non_core = staging_df[~staging_df["PRODLINE"].str.contains("CORE", na=False, case=False)]
+    vendors = non_core["VENDOR NO"].astype(str).unique()
+    pricing_vendors = set(pricing_df["vendor"].astype(str))
     
     missing = sorted(set(vendors) - pricing_vendors)
     

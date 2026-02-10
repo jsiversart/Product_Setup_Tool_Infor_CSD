@@ -73,7 +73,7 @@ def create_settings_window(settings, db):
 
         [sg.Text('Manual Pricing Rule Entry', font='Any 11 bold')],
         [sg.Text('Vendor:'), sg.Input(key='pricing_vendor', size=(15,1))],
-        [sg.Text('List Handling:'), sg.Input(key='pricing_vendor_list_handling', size=(30,1))],
+        [sg.Text('List Handling*:'), sg.Input(key='pricing_vendor_list_handling', size=(30,1))],
         [sg.Text('Base Multiplier, < 1.5:'), sg.Input(key='pricing_b_1', size=(30,1))],
         [sg.Text('Base Multiplier, 1.5-4.99:'), sg.Input(key='pricing_b_2', size=(30,1))],
         [sg.Text('Base Multiplier, 5-49.99:'), sg.Input(key='pricing_b_3', size=(30,1))],
@@ -86,6 +86,9 @@ def create_settings_window(settings, db):
         [sg.Text('List Multiplier, 5-49.99:'), sg.Input(key='pricing_l_2', size=(30,1))],
         [sg.Text('List Multiplier, 50-74.99:'), sg.Input(key='pricing_l_3', size=(30,1))],
         [sg.Text('List Multiplier, 75+:'), sg.Input(key='pricing_l_4', size=(30,1))],
+        [sg.Text('* List Handling Options: list_or_base1.1, take_min; setting comes into play if a list price is provided in input upload/entry', font='Any 9 italic', key='pricing_legend')],
+        [sg.Text('* list_or_base1.1 = If provided list price is below base price, use base price * 1.1, rather than list multipliers', font='Any 9 italic', key='pricing_legend2')],
+        [sg.Text('* take_min = Use minimum of provided list price or multiplier calculated list price', font='Any 9 italic', key='pricing_legend3')],
         [sg.Button('Save Pricing Rule'), sg.Button('Delete Pricing Rule')],
         [sg.HorizontalSeparator()],
         [sg.Text('Bulk Upload:', font='Any 11 bold')],
@@ -545,8 +548,7 @@ def create_main_window():
             [sg.Text('*Description:'), sg.Input(key='description', size=(40,1))],
             [sg.Text(' Core Flag (Y):'), sg.Input(key='core_flag', size=(5,1))],
             [sg.Text('*Repl Cost:'), sg.Input(key='repl_cost', size=(10,1))],
-            [sg.Text(' Base Price:'), sg.Input(key='base_price', size=(10,1))],
-            [sg.Text(' List Price:'), sg.Input(key='list_price', size=(10,1))],
+            [sg.Text(' List Price** SEE NOTE BELOW:'), sg.Input(key='list_price', size=(10,1))],
         ], key='form_column', visible=False),
         sg.Column([
             [sg.Text('Length:'), sg.Input(key='length', size=(10,1), default_text='1')],
@@ -559,7 +561,8 @@ def create_main_window():
         ], key='form_column2', visible=False)],
         [sg.Button('Add to Batch', key='add_manual', visible=False),
          sg.Button('Clear Form', key='clear_form', visible=False)],
-        [sg.Text('* = Required Field', font='Any 9 italic', key='required_legend', visible=False)]
+        [sg.Text('* = Required Field', font='Any 9 italic', key='required_legend', visible=False)],
+        [sg.Text('** If List Price is Provided but no "vendor list handling" is mapped iS Settings > Pricing Rules, List Price provided overrides multplier calculation for List', font='Any 9 italic', key='required_legend2', visible=False)]
     ]
     
     # Batch view
@@ -640,6 +643,7 @@ def main():
             window['clear_form'].update(visible=True)
             window['required_notice'].update(visible=True)
             window['required_legend'].update(visible=True)
+            window['required_legend2'].update(visible=True)
         elif event == 'input_file':
             window['form_column'].update(visible=False)
             window['form_column2'].update(visible=False)
@@ -647,6 +651,7 @@ def main():
             window['clear_form'].update(visible=False)
             window['required_notice'].update(visible=False)
             window['required_legend'].update(visible=False)
+            window['required_legend2'].update(visible=False)
         
         # Settings menu
         if event == 'Settings':
@@ -714,7 +719,7 @@ def main():
         # Clear form
         if event == 'clear_form':
             for key in ['prod', 'vendor_no', 'description', 'core_flag', 'repl_cost',
-                       'base_price', 'list_price', 'brand_code', 'prod_cat', 'web_cat']:
+                        'list_price', 'brand_code', 'prod_cat', 'web_cat']:
                 window[key].update('')
             window['length'].update('1')
             window['width'].update('1')
@@ -746,7 +751,6 @@ def main():
                         'DESCRIPTION': values['description'].strip(),
                         'CORE FLAG (Y)': values['core_flag'].strip().upper(),
                         'REPL COST': float(values['repl_cost']),
-                        'BASE PRICE': float(values['base_price']) if values['base_price'] else None,
                         'LIST PRICE': float(values['list_price']) if values['list_price'] else None,
                         'LENGTH': float(values['length']) if values['length'] else 1,
                         'WIDTH': float(values['width']) if values['width'] else 1,

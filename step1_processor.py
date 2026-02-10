@@ -1,10 +1,11 @@
 # app/step1_processor.py
-#generates ICSP upload
+# generates ICSP upload
 import pandas as pd
 import re
 import unicodedata
 from datetime import datetime
 import os
+
 
 def clean_description(desc):
     """Clean description to 24 chars"""
@@ -17,6 +18,7 @@ def clean_description(desc):
     text = re.sub(r'\s+', ' ', text)
     return text.strip().upper()[:24]
 
+
 def clean_description3(desc):
     """Clean description (full length)"""
     if pd.isna(desc):
@@ -27,6 +29,7 @@ def clean_description3(desc):
     text = re.sub(r'[\'\",/;\\]', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip().upper()
+
 
 def build_core_record(
     product,
@@ -42,15 +45,15 @@ def build_core_record(
     core_desc = f"CORE {base_prod}"
 
     core_record = [
-        product,                 # 1  PRODUCT
-        core_desc,               # 2  DESCRIPTION
+        product,                  # 1  PRODUCT
+        core_desc,                # 2  DESCRIPTION
         '',                       # 3  DESCRIPTION2
-        core_desc,               # 4  DESCRIPTION3
-        '', '', '', status, '',   # 5–9
-        1, 1, 1, 1, 1, 'EA',       # 10–15
+        core_desc,                # 4  DESCRIPTION3
+        '', '', '', status, '',   # 5-9  (status at index 7)
+        1, 1, 1, 1, 1, 'EA',      # 10-15
     ]
 
-    core_record += [''] * 20      # blank columns
+    core_record += [''] * 20     # blank columns
 
     core_record += [
         prodcat, '', '', brandcode, webcat
@@ -63,59 +66,61 @@ def build_core_record(
     core_record += [''] * 10
 
     core_record += [
-        core_type,                # PRODTYPE ('i' or 'd')
-        '',                        # IMPLIEDCOREPROD
-        '',                        # IMPLIEDQTY
-        '',                        # DIRTYCOREPROD
+        core_type,   # PRODTYPE ('i' for IC, 'd' for DC)
+        '',          # IMPLIEDCOREPROD (blank for IC/DC records)
+        '',          # IMPLIEDQTY
+        '',          # DIRTYCOREPROD
         ''
     ]
 
-    core_record += ['', '', '']   # grace placeholders
+    core_record += ['', '', '']  # grace placeholders
 
     core_record += [''] * 38
 
-    core_record += [
-        "NA",
-        "NA"
-    ]
+    core_record += ['NA', 'NA']
 
     core_record += [''] * (166 - len(core_record))
 
     return core_record
 
 
-
 def default_1(val):
     """Return val or 1 if NA"""
     return val if pd.notna(val) else 1
 
+
 def process_step1(db, output_folder):
     """
     Process Step 1 - Product master data (cp*.csv)
-    Generates the 166-column product master file
+    Generates the 166-column product master file.
+
+    Returns (step2_df, output_path, log_messages) where step2_df is in
+    rawicswdata format (named columns) and includes IC/DC rows with
+    vendor-specific prodline/cost overrides, ready for process_step2.
     """
-    
+
     log_messages = []
     records = []
-    
+    step2_records = []  # rawicswdata-format rows consumed by process_step2
+
     try:
         # Get data from staging
         staging_df = db.get_staging_data()
-        
+
         if staging_df.empty:
             raise Exception("No products in staging table")
-        
+
         log_messages.append(f"Processing {len(staging_df)} products...")
-        
+
         for _, row in staging_df.iterrows():
             try:
-                prod = str(row['PRODUCT']).strip()
+                prod = str(row['PRODUCT']).strip().upper()
                 vendor_no = int(float(row['VENDOR NO']))
                 core_flag = str(row.get('CORE FLAG (Y)', '')).strip().upper()
-                
+
                 # Product type
                 prodtype = 'r' if core_flag == 'Y' else ''
-                
+
                 # Get vendor defaults
                 vendor_defaults = db.get_vendor_defaults(vendor_no)
                 prodline = vendor_defaults.get('default_prodline', '') if vendor_defaults else ''
@@ -123,47 +128,52 @@ def process_step1(db, output_folder):
                 brandcode = row.get('BRAND CODE') or (vendor_defaults.get('default_brandcode', '') if vendor_defaults else '')
                 prodcat = row.get('PRODUCT CAT') or (vendor_defaults.get('default_prodcat', '') if vendor_defaults else '')
                 webcat = row.get('WEBSITE CAT') or (vendor_defaults.get('default_webcat', '') if vendor_defaults else '')
-                
+
                 # Costs and prices
                 repl_cost = float(row['REPL COST'])
                 base_price = float(row['BASE PRICE']) if pd.notna(row.get('BASE PRICE')) else None
                 list_price = float(row['LIST PRICE']) if pd.notna(row.get('LIST PRICE')) else None
-                
+
                 # Clean descriptions
                 description1 = clean_description(row['DESCRIPTION'])
                 description3 = clean_description3(row['DESCRIPTION'])
-                
+
                 # Dimensions
                 length = default_1(row.get('LENGTH', 1))
                 width = default_1(row.get('WIDTH', 1))
                 height = default_1(row.get('HEIGHT', 1))
                 weight = default_1(row.get('WEIGHT', 1))
                 cubes = length * width * height
-                
+
                 # Core handling
                 impliedcoreprod = dirtycoreprod = impliedqty = graceperiod = ''
                 core_description_override = ''
-                
+
                 if core_flag == 'Y':
+                    if vendor_no not in (360, 825):
+                        raise ValueError(
+                            f"Core products are only supported for Whirlpool (825) and GE (360). "
+                            f"Vendor {vendor_no} must be set up manually."
+                        )
+
                     prodtype = 'r'
                     impliedcoreprod = "IC" + prod
                     dirtycoreprod = "DC" + prod
                     impliedqty = '1'
                     graceperiod = '36'
-                    
+
                     # Vendor-specific core descriptions
                     if vendor_no == 360:
                         core_description_override = "CONTROL - ADD 55.00 CORE"
                     elif vendor_no == 825:
                         core_description_override = "CONTROL - ADD 60.00 CORE"
-                
+
                 slchgdt = datetime.today().strftime("%m/%d/%y")
-                
-                # Build 166-column record
 
                 def blank(n):
                     return [''] * n
 
+                # --- Build 166-column ICSP record ---
                 record = [
                     prod,
                     core_description_override or description1,
@@ -173,16 +183,16 @@ def process_step1(db, output_folder):
                     weight, cubes, length, width, height, 'EA',
                 ]
 
-                record += blank(20)                      # blank columns
+                record += blank(20)
 
                 record += [
-                    prodcat, '', '', brandcode, webcat   # matches old placement
+                    prodcat, '', '', brandcode, webcat
                 ]
 
                 record += blank(14)
 
                 record += [
-                    '', '', '',                          # placeholders
+                    '', '', '',
                     slchgdt
                 ]
 
@@ -196,74 +206,105 @@ def process_step1(db, output_folder):
                     ''
                 ]
 
-                record += [
-                    graceperiod, '', graceperiod
-                ]
+                record += [graceperiod, '', graceperiod]
 
                 record += blank(38)
 
-                record += [
-                    'NA',
-                    'NA'
-                ]
+                record += ['NA', 'NA']
 
                 record += blank(166 - len(record))
 
                 records.append(record)
 
-                
-                # Create IC and DC records if this is a core product
-                # Create IC and DC records if this is a core product
-                
-                if core_flag == 'Y':
-                        records.append(
-                            build_core_record(
-                                impliedcoreprod,
-                                status='L',
-                                core_type='i',
-                                base_prod=prod,
-                                prodcat=prodcat,
-                                brandcode=brandcode,
-                                webcat=webcat,
-                                slchgdt=slchgdt
-                            )
-                        )
+                # --- Build step2 row for base product ---
+                step2_records.append({
+                    'VENDOR NO': vendor_no,
+                    'PRODLINE': prodline,
+                    'PRODUCT': prod,
+                    'REPL COST': repl_cost,
+                    'BASE PRICE': base_price,
+                    'LIST PRICE': list_price,
+                    'SEASONAL': seasonal,
+                })
 
-                        records.append(
-                            build_core_record(
-                                dirtycoreprod,
-                                status='A',
-                                core_type='d',
-                                base_prod=prod,
-                                prodcat=prodcat,
-                                brandcode=brandcode,
-                                webcat=webcat,
-                                slchgdt=slchgdt
-                            )
+                # --- IC/DC records ---
+                if core_flag == 'Y':
+                    records.append(
+                        build_core_record(
+                            impliedcoreprod,
+                            status='L',
+                            core_type='i',
+                            base_prod=prod,
+                            prodcat=prodcat,
+                            brandcode=brandcode,
+                            webcat=webcat,
+                            slchgdt=slchgdt
                         )
-                        log_messages.append(f"✓ Processed core product: {prod} (with IC/DC)")
+                    )
+
+                    records.append(
+                        build_core_record(
+                            dirtycoreprod,
+                            status='A',
+                            core_type='d',
+                            base_prod=prod,
+                            prodcat=prodcat,
+                            brandcode=brandcode,
+                            webcat=webcat,
+                            slchgdt=slchgdt
+                        )
+                    )
+
+                    # Vendor-specific IC/DC overrides for step2 (prodline + fixed cost)
+                    if vendor_no == 825:
+                        core_prodline = "WPCORE"
+                        core_cost = 60.0
+                    elif vendor_no == 360:
+                        core_prodline = "GECORE"
+                        core_cost = 55.0
+                    else:
+                        core_prodline = prodline
+                        core_cost = repl_cost
+
+                    for core_prod in (impliedcoreprod, dirtycoreprod):
+                        step2_records.append({
+                            'VENDOR NO': vendor_no,
+                            'PRODLINE': core_prodline,
+                            'PRODUCT': core_prod,
+                            'REPL COST': core_cost,
+                            'BASE PRICE': core_cost,
+                            'LIST PRICE': core_cost,
+                            'SEASONAL': seasonal,
+                        })
+
+                    log_messages.append(f"✓ Processed core product: {prod} (with IC/DC)")
                 else:
                     log_messages.append(f"✓ Processed: {prod}")
-                
+
             except Exception as e:
                 log_messages.append(f"✗ Error processing {row.get('PRODUCT', 'unknown')}: {str(e)}")
-        
+
         # Generate hashed output filename
         day_of_year = datetime.today().timetuple().tm_yday
         seconds = datetime.today().second + datetime.today().minute * 60
         hash_part = format(seconds % (36**3), '03x')
         output_filename = f"cp{day_of_year:03}{hash_part}.csv"
         output_path = os.path.join(output_folder, output_filename)
-        
-        # Create DataFrame and export
+
+        # Export 166-column product master
         export_df = pd.DataFrame(records)
         export_df.to_csv(output_path, index=False, header=False)
-        
+
         log_messages.append(f"\n✓ Step 1 output saved: {output_filename}")
         log_messages.append(f"✓ Total records: {len(records)} ({len(staging_df)} products + cores)")
-        
-        return export_df, output_path, log_messages
-        
+
+        # Build step2-ready DataFrame (named columns, includes IC/DC with correct overrides)
+        step2_df = pd.DataFrame(step2_records, columns=[
+            'VENDOR NO', 'PRODLINE', 'PRODUCT', 'REPL COST', 'BASE PRICE', 'LIST PRICE', 'SEASONAL'
+        ])
+
+        return step2_df, output_path, log_messages
+
     except Exception as e:
         log_messages.append(f"✗ Error in Step 1 processing: {str(e)}")
         return None, None, log_messages

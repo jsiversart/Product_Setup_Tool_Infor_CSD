@@ -20,7 +20,6 @@ class TemplateGenerator:
             'DESCRIPTION': 'Sample Product Description',
             'CORE FLAG (Y)': '',
             'REPL COST': 10.00,
-            'BASE PRICE': 15.00,
             'LIST PRICE': 20.00,
             'LENGTH': 1,
             'WIDTH': 1,
@@ -35,19 +34,19 @@ class TemplateGenerator:
         
         instructions = pd.DataFrame({
             'Field': ['PRODUCT', 'VENDOR NO', 'DESCRIPTION', 'CORE FLAG (Y)', 
-                     'REPL COST', 'BASE PRICE', 'LIST PRICE', 'SEASONAL'],
-            'Required': ['Yes', 'Yes', 'Yes', 'No', 'Yes', 'No', 'No', 'No'],
+                    'REPL COST', 'LIST PRICE', 'SEASONAL'],
+            'Required': ['Yes', 'Yes', 'Yes', 'No', 'Yes', 'No', 'No'],
             'Description': [
                 'Product SKU/Part Number (unique identifier)',
                 'Vendor number (must match vendor defaults)',
                 'Product description (will be cleaned to 24 chars)',
                 'Enter Y if this is a core product, leave blank otherwise',
                 'Replacement cost from vendor',
-                'Optional: Override calculated base price',
                 'Optional: Override calculated list price',
                 'Enter y for seasonal products, n for standard'
             ]
         })
+
         
         output_path = self.template_dir / 'product_input_template.xlsx'
         
