@@ -142,7 +142,7 @@ def create_settings_window(settings, db):
             [sg.Text('Type:'), sg.Combo(['D', 'B'], key='wh_type', size=(5,1), readonly=True),
             sg.Text('(D=Distribution, B=Branch)')],
             [sg.Text('ARP Whse:'), sg.Input(key='wh_arpwhse', size=(10,1)),
-            sg.Text('(Only for Distribution centers)')],
+            sg.Text('(Required for Branches)')],
             [sg.Text('Description:'), sg.Input(key='wh_description', size=(40,1))],
             [sg.Checkbox('Active', key='wh_active', default=True)],
             [sg.Button('Save Warehouse'), sg.Button('Delete Warehouse')],
@@ -446,7 +446,7 @@ def handle_settings_window(settings, db, template_gen):
                 arpwhse = None
                 
                 # Validate ARP warehouse for Distribution centers
-                if wh_type == 'D':
+                if wh_type == 'B':
                     arpwhse_str = values['wh_arpwhse'].strip()
                     if arpwhse_str:
                         try:

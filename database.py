@@ -9,11 +9,14 @@ import shutil
 class AppDatabase:
     """Manage self-contained application database"""
     
-    def __init__(self, db_path='data/app_data.db'):
-        self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = None
-        self.initialize_database()
+    def __init__(self, db_path=None):
+        from _paths import BASE_DIR
+        if db_path is None:
+            db_path = str(BASE_DIR / 'data' / 'app_data.db')
+            self.db_path = db_path
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            self.conn = None
+            self.initialize_database()
     
     def initialize_database(self):
         """Create database and tables if they don't exist"""
@@ -107,10 +110,9 @@ class AppDatabase:
         cursor.execute('SELECT COUNT(*) FROM warehouse_info')
         if cursor.fetchone()[0] == 0:
             default_warehouses = [
-                (25, 'D', 15, 'Main Distribution Center'),
-                (50, 'D', 16, 'Secondary Distribution Center'),
-                (10, 'B', None, 'Branch 10'),
-                (20, 'B', None, 'Branch 20')
+                (25, 'D', None, 'Main Distribution Center'),
+                (50, 'D', None, 'Secondary Distribution Center'),
+                (13, 'B', 50, 'Call Center')
             ]
             cursor.executemany(
                 'INSERT INTO warehouse_info (warehouse, type, arpwhse, description) VALUES (?, ?, ?, ?)',

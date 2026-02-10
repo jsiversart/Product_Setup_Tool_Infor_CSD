@@ -6,18 +6,21 @@ from pathlib import Path
 class Settings:
     """Manage application settings"""
     
-    def __init__(self, settings_file='config/app_settings.json'):
-        self.settings_file = settings_file
-        Path(settings_file).parent.mkdir(parents=True, exist_ok=True)
-        self.defaults = {
-            'folders': {
-                'prodadds': './output',
-                'output_folder': './output',
-                'archive': './archive'
-            },
-            'use_internal_db': True
-        }
-        self.load()
+    def __init__(self, settings_file=None):
+        from _paths import BASE_DIR
+        if settings_file is None:
+            settings_file = str(BASE_DIR / 'config' / 'app_settings.json')
+            self.settings_file = settings_file
+            Path(settings_file).parent.mkdir(parents=True, exist_ok=True)
+            self.defaults = {
+                'folders': {
+                    'prodadds': './output',
+                    'output_folder': './output',
+                    'archive': './archive'
+                },
+                'use_internal_db': True
+            }
+            self.load()
     
     def load(self):
         """Load settings from file"""
