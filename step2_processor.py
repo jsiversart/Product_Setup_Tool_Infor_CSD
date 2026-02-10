@@ -117,14 +117,14 @@ def validate_pricing_map(db, staging_df):
         )
     
     vendors = staging_df["VENDOR NO"].astype(str).unique()
-    pricing_vendors = set(pricing_df["vendor"].astype(str)) | {"Standard"}
+    pricing_vendors = set(pricing_df["vendor"].astype(str)) 
     
     missing = sorted(set(vendors) - pricing_vendors)
     
     if missing:
         raise Exception(
             f"Missing pricing rules for vendor(s): {', '.join(missing)}\n"
-            f"Add these vendors to pricing rules or they will use 'Standard' pricing."
+            f"Add these vendors to pricing rules ."
         )
     
     return pricing_df
@@ -255,7 +255,7 @@ def build_icsw(expanded_df, today_str):
         "arppushfl": "",
         "arpvendno": df["VENDOR NO"].astype("Int64"),
         "arpwhse": pd.to_numeric(df["arpwhse"], errors="coerce").astype("Int64"),
-        "prodline": df.get("PRODLINE", ""),
+        "prodline": df.get("PRODLINE", ""), 
         "vendprod": "",
         "famgrptype": "",
         "ncnr": "",
