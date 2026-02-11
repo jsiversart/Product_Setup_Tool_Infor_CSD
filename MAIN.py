@@ -142,7 +142,7 @@ def create_settings_window(settings, db):
             [sg.Text('Type:'), sg.Combo(['D', 'B'], key='wh_type', size=(5,1), readonly=True),
             sg.Text('(D=Distribution, B=Branch)')],
             [sg.Text('ARP Whse:'), sg.Input(key='wh_arpwhse', size=(10,1)),
-            sg.Text('(Required for Branches)')],
+            sg.Text('(Required for Branch warehouses)')],
             [sg.Text('Description:'), sg.Input(key='wh_description', size=(40,1))],
             [sg.Checkbox('Active', key='wh_active', default=True)],
             [sg.Button('Save Warehouse'), sg.Button('Delete Warehouse')],
@@ -331,7 +331,11 @@ def handle_settings_window(settings, db, template_gen):
             sg.popup(f'Pricing rule deleted for {vendor}')
 
         elif event == 'pricing_table' and values['pricing_table']:
-            row = values['pricing_table'][0]
+            row_index = values['pricing_table'][0]
+            table_data = window['pricing_table'].get()
+            if row_index >= len(table_data):
+                continue
+            row = table_data[row_index]
 
             vendor = row[0]
             list_handling = row[1]
@@ -445,7 +449,7 @@ def handle_settings_window(settings, db, template_gen):
                 wh_number = int(wh_num)
                 arpwhse = None
                 
-                # Validate ARP warehouse for Distribution centers
+                # Validate ARP warehouse for Branch warehouses
                 if wh_type == 'B':
                     arpwhse_str = values['wh_arpwhse'].strip()
                     if arpwhse_str:
