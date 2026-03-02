@@ -8,7 +8,8 @@ class TemplateGenerator:
     """Generate Excel templates for various uploads"""
     
     def __init__(self):
-        self.template_dir = Path('app/templates')
+        from _paths import BASE_DIR
+        self.template_dir = BASE_DIR / 'app' / 'templates'
         self.template_dir.mkdir(parents=True, exist_ok=True)
     
     def generate_product_input_template(self):

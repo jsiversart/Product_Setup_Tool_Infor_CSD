@@ -46,6 +46,7 @@ a = Analysis(
         # stdlib — sqlite3 sometimes needs explicit inclusion
         'sqlite3',
         '_sqlite3',
+	'tkinter',
     ],
     hookspath=[],
     hooksconfig={},
@@ -55,7 +56,6 @@ a = Analysis(
         'matplotlib',
         'scipy',
         'PIL',
-        'tkinter',
         'PyQt5',
         'PyQt6',
         'PySide2',
