@@ -1,8 +1,16 @@
 # Product Adds Management System
 
-Last edit 2/10/26 by Julian Sivers
+Last edit 3/7/26 by Julian Sivers
 
-A desktop tool for generating ICSP (product master) and ICSW (warehouse/pricing) upload files for new product additions. Built for internal use on Windows.
+A desktop tool for generating ICSP (product master) and ICSW (warehouse/pricing) upload files for new product additions in Infor Cloudsuite Distribution (CSD). Built for internal use on Windows.
+
+# The Problem
+
+Managing 30+ warehouse locations with strict product setup rules created a bottleneck. Setting up a new vendor with thousands of items required manual data entry across multiple pages for initial ICSP and ICSW records, with copies needing manual adjustment for each warehouse—highly error-prone and slow.
+
+Previous Excel-based solutions broke with large catalogs and didn’t scale after a company merger increased warehouse count. The process was manual, fragile, and time-consuming.
+
+This tool automates and standardizes the entire product setup workflow, making it fast, reliable, and portable; anyone with data conversion access across the company can now complete tasks that previously took hours in minutes, reducing errors and scaling to thousands of items effortlessly.
 
 ---
 
@@ -134,7 +142,5 @@ Both files are written to the configured Output Folder. The Upload Log (File →
 ## Deployment Notes
 
 - **Single machine:** Copy the entire folder to the target machine and run `ProductAddsManager.exe`. No Python or other software required.
-- **Shared drive:** The tool can run from a network path, but `data/app_data.db` should live locally (or on a path with write access) to avoid locking issues.
 - **Pre-loaded deployment:** To ship with vendors, warehouses, and pricing rules already configured, run the tool once on a setup machine, configure everything, then copy the resulting `data/app_data.db` alongside the executable.
 - **Empty deployment:** Delete `data/app_data.db` before distributing; the app recreates it with defaults on first launch.
-- **Antivirus:** The executable is signed with an internal self-signed certificate. If Acronis or other AV flags the file, add the executable path or the certificate thumbprint to the AV allow-list. See `CERT_SETUP.md` for the signing certificate details.
