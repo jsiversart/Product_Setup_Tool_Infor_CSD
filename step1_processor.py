@@ -293,7 +293,7 @@ def process_step1(db, output_folder):
 
         # Export 166-column product master
         export_df = pd.DataFrame(records)
-        export_df.to_csv(output_path, index=False, header=False)
+        export_df.to_csv(output_path, index=False, header=True)
 
         log_messages.append(f"\n✓ Step 1 output saved: {output_filename}")
         log_messages.append(f"✓ Total records: {len(records)} ({len(staging_df)} products + cores)")
