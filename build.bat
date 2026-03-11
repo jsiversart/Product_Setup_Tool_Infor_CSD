@@ -22,6 +22,7 @@ set VENV_DIR=build_venv
 set SIGN=0
 set PACK=0
 
+
 :: Parse arguments
 for %%A in (%*) do (
     if /I "%%A"=="/sign" set SIGN=1
@@ -127,6 +128,30 @@ if not exist "%DIST_DIR%\config" mkdir "%DIST_DIR%\config"
 echo [OK] Runtime folders ready.
 
 :: ----------------------------------------------------------
+:: Flatten dist folder for user-friendly distribution
+:: ----------------------------------------------------------
+echo [..] Flattening distribution for user-friendly access...
+
+:: Remove old folder if it exists
+if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+
+:: Recreate folder
+mkdir "%DIST_DIR%"
+
+:: Copy EXE
+copy /Y "dist\build\%APP_NAME%.exe" "%DIST_DIR%\%APP_NAME%.exe" >nul
+
+:: Copy runtime folders (data, config, output, archive)
+for %%F in (data config output archive) do (
+    xcopy /E /I /Y "dist\build\%%F" "%DIST_DIR%\%%F" >nul
+)
+
+:: Copy README
+if exist README.md copy /Y README.md "%DIST_DIR%\README.md"
+
+echo [OK] Distribution ready: %DIST_DIR%
+
+:: ----------------------------------------------------------
 :: 7. Optional: Sign the EXE
 :: ----------------------------------------------------------
 if "%SIGN%"=="1" (
@@ -195,21 +220,18 @@ if "%SIGN%"=="1" (
 :: 8. Optional: Package into a zip
 :: ----------------------------------------------------------
 if "%PACK%"=="1" (
-    echo.
-    echo [..] Packaging into zip...
+    echo [..] Packaging folder into zip...
     set ZIP_NAME=%APP_NAME%_v%DATE:~10,4%%DATE:~4,2%%DATE:~7,2%.zip
 
-    :: Use PowerShell to zip (no 7-zip needed)
     powershell -Command ^
         "Compress-Archive -Path '%DIST_DIR%\*' -DestinationPath 'dist\!ZIP_NAME!' -Force"
 
     if errorlevel 1 (
-        echo [WARN] Zip packaging failed. Distribute the dist\%APP_NAME% folder directly.
+        echo [WARN] Zip packaging failed. Distribute the folder directly.
     ) else (
         echo [OK] Package ready: dist\!ZIP_NAME!
     )
 )
-
 :: ----------------------------------------------------------
 :: Done
 :: ----------------------------------------------------------
