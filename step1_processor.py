@@ -246,7 +246,7 @@ def process_step1(db, output_folder):
                         build_core_record(
                             dirtycoreprod,
                             status='A',
-                            core_type='d',
+                            core_type='C',
                             base_prod=prod,
                             prodcat=prodcat,
                             brandcode=brandcode,
