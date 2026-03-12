@@ -128,29 +128,22 @@ if not exist "%DIST_DIR%\config" mkdir "%DIST_DIR%\config"
 echo [OK] Runtime folders ready.
 
 :: ----------------------------------------------------------
-:: Flatten dist folder for user-friendly distribution
+:: Copy runtime folders and README into dist for distribution
 :: ----------------------------------------------------------
-echo [..] Flattening distribution for user-friendly access...
+echo [..] Preparing distribution folder...
 
-:: Remove old folder if it exists
-if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
-
-:: Recreate folder
-mkdir "%DIST_DIR%"
-
-:: Copy EXE
-copy /Y "dist\build\%APP_NAME%.exe" "%DIST_DIR%\%APP_NAME%.exe" >nul
-
-:: Copy runtime folders (data, config, output, archive)
+:: Create runtime folders if missing
 for %%F in (data config output archive) do (
-    xcopy /E /I /Y "dist\build\%%F" "%DIST_DIR%\%%F" >nul
+    if not exist "%DIST_DIR%\%%F" mkdir "%DIST_DIR%\%%F"
 )
+
+:: Copy preloaded DB if exists
+if exist data\app_data.db copy /Y data\app_data.db "%DIST_DIR%\data\app_data.db" >nul
 
 :: Copy README
 if exist README.md copy /Y README.md "%DIST_DIR%\README.md"
 
-echo [OK] Distribution ready: %DIST_DIR%
-
+echo [OK] Distribution folder ready: %DIST_DIR%
 :: ----------------------------------------------------------
 :: 7. Optional: Sign the EXE
 :: ----------------------------------------------------------
